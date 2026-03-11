@@ -518,6 +518,34 @@ defmodule Haruspex.TokenizerTest do
       end
     end
 
+    property "span coverage: token spans plus whitespace/comments cover entire source" do
+      check all(source <- source_gen()) do
+        case Tokenizer.tokenize(source) do
+          {:ok, tokens} ->
+            # Build a set of all byte positions covered by token spans (excluding eof).
+            covered =
+              tokens
+              |> Enum.reject(fn {tag, _, _} -> tag == :eof end)
+              |> Enum.flat_map(fn {_, span, _} ->
+                Enum.to_list(span.start..(span.start + span.length - 1)//1)
+              end)
+              |> MapSet.new()
+
+            # Every byte not covered must be whitespace or part of a comment.
+            source_bytes = :binary.bin_to_list(source)
+
+            for {byte, idx} <- Enum.with_index(source_bytes),
+                not MapSet.member?(covered, idx) do
+              assert byte in [?\s, ?\t, ?\r, ?\n, ?#] or in_comment?(source, idx),
+                     "byte at position #{idx} (#{<<byte::utf8>>}) is not covered by a token or whitespace"
+            end
+
+          {:error, _, _} ->
+            :ok
+        end
+      end
+    end
+
     property "determinism: same input always produces same output" do
       check all(source <- source_gen()) do
         result1 = Tokenizer.tokenize(source)
@@ -607,6 +635,29 @@ defmodule Haruspex.TokenizerTest do
 
     gen all(parts <- list_of(fragments, min_length: 0, max_length: 10)) do
       Enum.join(parts)
+    end
+  end
+
+  # Returns true if byte at `idx` is inside a comment (between # and newline).
+  defp in_comment?(source, idx) do
+    # Scan backwards from idx to find if there's a # before the next newline.
+    prefix = binary_part(source, 0, idx + 1)
+
+    case :binary.match(prefix, "#") do
+      :nomatch ->
+        false
+
+      _ ->
+        # Find the last # before or at idx, check no newline between it and idx.
+        prefix
+        |> String.graphemes()
+        |> Enum.with_index()
+        |> Enum.reverse()
+        |> Enum.reduce_while(false, fn
+          {"\n", i}, _acc when i < idx -> {:halt, false}
+          {"#", i}, _acc when i <= idx -> {:halt, true}
+          _, acc -> {:cont, acc}
+        end)
     end
   end
 end
