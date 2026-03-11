@@ -11,19 +11,27 @@ Defines the surface AST node types. All nodes are tagged tuples carrying `Pentim
 ## Key types
 
 ```elixir
+# Shared sub-structures
+@type binder :: {atom(), multiplicity(), implicit?()}
+  # {name, multiplicity, implicit?} — reused in params and pi types
+@type multiplicity :: :omega | :zero
+@type implicit? :: boolean()
+@type attrs :: %{total: boolean(), private: boolean(), extern: extern() | nil}
+@type extern :: {module(), atom(), arity()}
+
 # Top-level declarations
 @type toplevel :: def_node() | type_decl()
-@type def_node :: {:def, Span.t(), atom(), Span.t(), [param()], type_expr() | nil, expr(), boolean()}
-  # {:def, span, name, name_span, params, return_type, body, total?}
+@type def_node :: {:def, Span.t(), signature(), expr()}
+  # {:def, span, signature, body}
+@type signature :: {:sig, Span.t(), atom(), Span.t(), [param()], type_expr() | nil, attrs()}
+  # {:sig, span, name, name_span, params, return_type, attrs}
 @type type_decl :: {:type_decl, Span.t(), atom(), [atom()], [constructor()]}
   # {:type_decl, span, name, type_params, constructors}
 @type constructor :: {:constructor, Span.t(), atom(), [type_expr()]}
 
 # Parameters
-@type param :: {:param, Span.t(), atom(), type_expr(), multiplicity(), implicit?()}
-  # {:param, span, name, type, mult, implicit?}
-@type multiplicity :: :omega | :zero
-@type implicit? :: boolean()
+@type param :: {:param, Span.t(), binder(), type_expr()}
+  # {:param, span, binder, type}
 
 # Expressions
 @type expr ::
@@ -42,7 +50,7 @@ Defines the surface AST node types. All nodes are tagged tuples carrying `Pentim
 
 # Type expressions (surface-level, before elaboration)
 @type type_expr ::
-  {:pi, Span.t(), atom(), multiplicity(), type_expr(), type_expr(), implicit?()}
+  {:pi, Span.t(), binder(), type_expr(), type_expr()}
   | {:sigma, Span.t(), atom(), type_expr(), type_expr()}
   | {:refinement, Span.t(), atom(), type_expr(), expr()}
   | {:type_universe, Span.t(), non_neg_integer() | nil}
@@ -67,9 +75,12 @@ Helper constructors for each node type (optional, for test convenience).
 ## Implementation notes
 
 - All nodes are tagged tuples, not structs — matches Lark's pattern for simplicity
-- `span/1` extracts the span from any node via pattern matching on the second element
+- `span/1` extracts the span from any node via `elem(node, 1)`
 - Type expressions reuse expression syntax where possible (a variable `Int` is both an expression and a type)
-- `nil` return type on `def_node` means the return type is not annotated (will be inferred)
+- `nil` return type on `signature` means the return type is not annotated (will be inferred)
+- `binder()` is a plain triple, not a tagged tuple — it's always embedded inside a spanned node
+- `signature()` is a first-class node so mutual blocks can collect signatures before checking bodies
+- `attrs()` is a map to accommodate future annotations without widening the tuple
 
 ## Testing strategy
 
