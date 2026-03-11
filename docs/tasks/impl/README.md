@@ -16,6 +16,7 @@ A tier is complete when:
 8. Property tests cover core invariants
 9. Negative tests cover error paths
 10. Integration tests demonstrate the tier's milestone
+11. All changes are committed with atomic, bisect-able commits following `[component] description` style
 
 ## Task index
 
