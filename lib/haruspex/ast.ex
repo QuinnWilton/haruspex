@@ -5,6 +5,12 @@ defmodule Haruspex.AST do
   Every node carries a `Pentiment.Span.Byte` for error reporting and LSP
   integration. Nodes are plain tagged tuples — no structs.
 
+  ## Sub-structures
+
+      binder = {name, mult, implicit?}
+      signature = {:sig, span, name, name_span, [param], return_type | nil, attrs}
+      attrs = %{total: bool, private: bool, extern: extern | nil}
+
   ## Expressions
 
       {:var, span, name}
@@ -19,18 +25,27 @@ defmodule Haruspex.AST do
       {:pipe, span, left, right}
       {:ann, span, expr, type_expr}
       {:hole, span}
+      {:dot, span, expr, field_name}
+      {:record_construct, span, name, [{atom, expr}]}
+      {:record_update, span, expr, [{atom, expr}]}
 
   ## Type expressions
 
-      {:pi, span, name, mult, domain, codomain, implicit?}
+      {:pi, span, binder, domain, codomain}
       {:sigma, span, name, fst_type, snd_type}
       {:refinement, span, name, base_type, predicate}
       {:type_universe, span, level | nil}
 
   ## Top-level
 
-      {:def, span, name, name_span, [param], return_type | nil, body, total?}
+      {:def, span, signature, body}
       {:type_decl, span, name, [type_param], [constructor]}
+      {:import, span, module_path, open_option}
+      {:variable_decl, span, [param]}
+      {:mutual, span, [toplevel]}
+      {:class_decl, span, name, [param], [constraint], [method_sig]}
+      {:instance_decl, span, class_name, [type_arg], [constraint], [method_impl]}
+      {:record_decl, span, name, [param], [field]}
 
   ## Patterns
 
@@ -38,6 +53,7 @@ defmodule Haruspex.AST do
       {:pat_lit, span, value}
       {:pat_constructor, span, name, [pattern]}
       {:pat_wildcard, span}
+      {:pat_record, span, name, [{atom, pattern}]}
 
   ## Spans
 
@@ -46,23 +62,41 @@ defmodule Haruspex.AST do
   convert to line/column positions for display.
   """
 
+  # ============================================================================
+  # Shared sub-structures
+  # ============================================================================
+
   @type span :: Pentiment.Span.Byte.t()
   @type mult :: :omega | :zero
 
-  @type param ::
-          {:param, span(), atom(), type_expr(), mult(), boolean()}
+  @typedoc "Binding site: {name, multiplicity, implicit?}."
+  @type binder :: {atom(), mult(), boolean()}
 
-  @type constructor :: {:constructor, span(), atom(), [type_expr()]}
+  @typedoc "Function attributes carried on a signature."
+  @type attrs :: %{total: boolean(), private: boolean(), extern: extern() | nil}
 
-  @type branch :: {:branch, span(), pattern(), expr()}
+  @typedoc "Extern reference: {module, function, arity}."
+  @type extern :: {module(), atom(), non_neg_integer()}
 
-  @type pattern ::
-          {:pat_var, span(), atom()}
-          | {:pat_lit, span(), literal()}
-          | {:pat_constructor, span(), atom(), [pattern()]}
-          | {:pat_wildcard, span()}
+  @typedoc "Function signature, separable from its body for mutual block collection."
+  @type signature ::
+          {:sig, span(), atom(), span(), [param()], type_expr() | nil, attrs()}
+
+  # ============================================================================
+  # Parameters and binders
+  # ============================================================================
+
+  @type param :: {:param, span(), binder(), type_expr()}
+
+  # ============================================================================
+  # Literals
+  # ============================================================================
 
   @type literal :: integer() | float() | String.t() | atom() | boolean()
+
+  # ============================================================================
+  # Expressions
+  # ============================================================================
 
   @type expr ::
           {:var, span(), atom()}
@@ -77,36 +111,103 @@ defmodule Haruspex.AST do
           | {:pipe, span(), expr(), expr()}
           | {:ann, span(), expr(), type_expr()}
           | {:hole, span()}
-
-  @type type_expr ::
-          {:pi, span(), atom(), mult(), type_expr(), type_expr(), boolean()}
-          | {:sigma, span(), atom(), type_expr(), type_expr()}
-          | {:refinement, span(), atom(), type_expr(), expr()}
-          | {:type_universe, span(), non_neg_integer() | nil}
-          | expr()
-
-  @type toplevel ::
-          {:def, span(), atom(), span(), [param()], type_expr() | nil, expr(), boolean()}
-          | {:type_decl, span(), atom(), [atom()], [constructor()]}
-
-  @type program :: [toplevel()]
+          | {:dot, span(), expr(), atom()}
+          | {:record_construct, span(), atom(), [{atom(), expr()}]}
+          | {:record_update, span(), expr(), [{atom(), expr()}]}
 
   @type binop ::
           :add | :sub | :mul | :div | :eq | :neq | :lt | :gt | :lte | :gte | :and | :or
 
   @type unaryop :: :neg | :not
 
+  # ============================================================================
+  # Type expressions
+  # ============================================================================
+
+  @type type_expr ::
+          {:pi, span(), binder(), type_expr(), type_expr()}
+          | {:sigma, span(), atom(), type_expr(), type_expr()}
+          | {:refinement, span(), atom(), type_expr(), expr()}
+          | {:type_universe, span(), non_neg_integer() | nil}
+          | expr()
+
+  # ============================================================================
+  # Patterns
+  # ============================================================================
+
+  @type branch :: {:branch, span(), pattern(), expr()}
+
+  @type pattern ::
+          {:pat_var, span(), atom()}
+          | {:pat_lit, span(), literal()}
+          | {:pat_constructor, span(), atom(), [pattern()]}
+          | {:pat_wildcard, span()}
+          | {:pat_record, span(), atom(), [{atom(), pattern()}]}
+
+  # ============================================================================
+  # Top-level declarations
+  # ============================================================================
+
+  @type toplevel ::
+          {:def, span(), signature(), expr()}
+          | {:type_decl, span(), atom(), [type_param()], [constructor()]}
+          | {:import, span(), module_path(), open_option()}
+          | {:variable_decl, span(), [param()]}
+          | {:mutual, span(), [toplevel()]}
+          | {:class_decl, span(), atom(), [param()], [constraint()], [method_sig()]}
+          | {:instance_decl, span(), atom(), [type_expr()], [constraint()], [method_impl()]}
+          | {:record_decl, span(), atom(), [param()], [field()]}
+
+  @type program :: [toplevel()]
+
+  @typedoc "Type parameter with optional kind annotation."
+  @type type_param :: {atom(), type_expr() | nil}
+
+  @typedoc "ADT constructor, with optional return type for GADTs."
+  @type constructor :: {:constructor, span(), atom(), [field()], type_expr() | nil}
+
+  @typedoc "Named field in a constructor or record."
+  @type field :: {:field, span(), atom(), type_expr()}
+
+  @typedoc "Module path as a list of atoms, e.g., [:Data, :Vec]."
+  @type module_path :: [atom()]
+
+  @typedoc "Import open option: true for all, list of atoms for selective, nil for qualified only."
+  @type open_option :: boolean() | [atom()] | nil
+
+  @typedoc "Type class constraint, e.g., Eq(a)."
+  @type constraint :: {:constraint, span(), atom(), [type_expr()]}
+
+  @typedoc "Method signature in a class declaration."
+  @type method_sig :: {:method_sig, span(), atom(), type_expr()}
+
+  @typedoc "Method implementation in an instance declaration."
+  @type method_impl :: {:method_impl, span(), atom(), expr()}
+
+  # ============================================================================
+  # Span extraction
+  # ============================================================================
+
   @doc """
   Returns the span of any AST node.
+
+  All AST nodes are tagged tuples with the span in the second position.
   """
-  @spec span(expr() | toplevel() | type_expr() | pattern() | branch() | param() | constructor()) ::
-          span()
-  def span({_tag, %Pentiment.Span.Byte{} = s}), do: s
-  def span({_tag, %Pentiment.Span.Byte{} = s, _}), do: s
-  def span({_tag, %Pentiment.Span.Byte{} = s, _, _}), do: s
-  def span({_tag, %Pentiment.Span.Byte{} = s, _, _, _}), do: s
-  def span({_tag, %Pentiment.Span.Byte{} = s, _, _, _, _}), do: s
-  def span({_tag, %Pentiment.Span.Byte{} = s, _, _, _, _, _}), do: s
-  def span({_tag, %Pentiment.Span.Byte{} = s, _, _, _, _, _, _}), do: s
-  def span({_tag, %Pentiment.Span.Byte{} = s, _, _, _, _, _, _, _}), do: s
+  @spec span(
+          expr()
+          | toplevel()
+          | type_expr()
+          | pattern()
+          | branch()
+          | param()
+          | constructor()
+          | signature()
+          | field()
+          | constraint()
+          | method_sig()
+          | method_impl()
+        ) :: span()
+  def span(node) when is_tuple(node) and tuple_size(node) >= 2 do
+    elem(node, 1)
+  end
 end

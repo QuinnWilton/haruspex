@@ -20,14 +20,33 @@ Defines the surface AST node types. All nodes are tagged tuples carrying `Pentim
 @type extern :: {module(), atom(), arity()}
 
 # Top-level declarations
-@type toplevel :: def_node() | type_decl()
-@type def_node :: {:def, Span.t(), signature(), expr()}
-  # {:def, span, signature, body}
+@type toplevel ::
+  {:def, Span.t(), signature(), expr()}
+  | {:type_decl, Span.t(), atom(), [type_param()], [constructor()]}
+  | {:import, Span.t(), module_path(), open_option()}
+  | {:variable_decl, Span.t(), [param()]}
+  | {:mutual, Span.t(), [toplevel()]}
+  | {:class_decl, Span.t(), atom(), [param()], [constraint()], [method_sig()]}
+  | {:instance_decl, Span.t(), atom(), [type_expr()], [constraint()], [method_impl()]}
+  | {:record_decl, Span.t(), atom(), [param()], [field()]}
+
 @type signature :: {:sig, Span.t(), atom(), Span.t(), [param()], type_expr() | nil, attrs()}
   # {:sig, span, name, name_span, params, return_type, attrs}
-@type type_decl :: {:type_decl, Span.t(), atom(), [atom()], [constructor()]}
-  # {:type_decl, span, name, type_params, constructors}
-@type constructor :: {:constructor, Span.t(), atom(), [type_expr()]}
+
+@type type_param :: {atom(), type_expr() | nil}
+  # type parameter with optional kind, e.g., (a : Type) or (n : Nat)
+
+@type constructor :: {:constructor, Span.t(), atom(), [field()], type_expr() | nil}
+  # constructor with named fields and optional return type (for GADTs)
+
+@type field :: {:field, Span.t(), atom(), type_expr()}
+@type module_path :: [atom()]
+@type open_option :: boolean() | [atom()] | nil
+@type constraint :: {:constraint, Span.t(), atom(), [type_expr()]}
+@type method_sig :: {:method_sig, Span.t(), atom(), type_expr()}
+@type method_impl :: {:method_impl, Span.t(), atom(), expr()}
+
+@type program :: [toplevel()]
 
 # Parameters
 @type param :: {:param, Span.t(), binder(), type_expr()}
@@ -47,6 +66,9 @@ Defines the surface AST node types. All nodes are tagged tuples carrying `Pentim
   | {:pipe, Span.t(), expr(), expr()}
   | {:ann, Span.t(), expr(), type_expr()}
   | {:hole, Span.t()}
+  | {:dot, Span.t(), expr(), atom()}
+  | {:record_construct, Span.t(), atom(), [{atom(), expr()}]}
+  | {:record_update, Span.t(), expr(), [{atom(), expr()}]}
 
 # Type expressions (surface-level, before elaboration)
 @type type_expr ::
@@ -61,16 +83,19 @@ Defines the surface AST node types. All nodes are tagged tuples carrying `Pentim
   | {:pat_lit, Span.t(), literal()}
   | {:pat_constructor, Span.t(), atom(), [pattern()]}
   | {:pat_wildcard, Span.t()}
-@type literal :: integer() | float() | String.t() | atom()
+  | {:pat_record, Span.t(), atom(), [{atom(), pattern()}]}
+@type literal :: integer() | float() | String.t() | atom() | boolean()
 ```
 
 ## Public API
 
 ```elixir
-@spec span(toplevel() | expr() | type_expr() | pattern()) :: Pentiment.Span.Byte.t()
+@spec span(expr() | toplevel() | type_expr() | pattern() | branch() | param()
+           | constructor() | signature() | field() | constraint()
+           | method_sig() | method_impl()) :: Pentiment.Span.Byte.t()
 ```
 
-Helper constructors for each node type (optional, for test convenience).
+Uses `elem(node, 1)` — works on any tagged tuple with a span in position 1.
 
 ## Implementation notes
 
@@ -84,5 +109,5 @@ Helper constructors for each node type (optional, for test convenience).
 
 ## Testing strategy
 
-- **Unit tests**: Constructor helpers produce well-formed nodes
-- **Property tests**: `span/1` never crashes on any valid AST node
+- **Unit tests**: `span/1` returns correct span for every node type (expressions, type expressions, patterns, top-level declarations, sub-nodes)
+- **Property tests**: `span/1` returns the span from position 1 for any randomly generated valid AST node
