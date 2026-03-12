@@ -1,0 +1,178 @@
+# Normalization by Evaluation
+
+## Section
+
+```elixir
+Mix.install([
+  {:haruspex, path: Path.join(__DIR__, "../..")}
+])
+```
+
+Haruspex uses **normalization-by-evaluation (NbE)** to decide type equality in its dependent type system. The idea: evaluate core terms into a semantic *value* domain, then read them back into normal-form terms.
+
+This notebook demonstrates the three core operations:
+
+1. **Eval** — core terms → values (beta reduction, delta reduction for builtins)
+2. **Quote** — values → normal-form core terms (with type-directed eta-expansion)
+3. **NbE roundtrip** — eval then quote produces stable normal forms
+
+## Core terms
+
+Core terms use de Bruijn indices — variables are numbers counting how many binders to skip. This eliminates alpha-equivalence issues entirely.
+
+```elixir
+alias Haruspex.{Core, Eval, Quote, Value}
+
+# The identity function: fn x -> x
+# In de Bruijn: Lam(ω, Var(0)) — Var(0) refers to the nearest binder.
+identity = Core.lam(:omega, Core.var(0))
+
+# Constant function: fn x -> fn y -> x
+# Var(1) skips the inner binder to reach x.
+const_fn = Core.lam(:omega, Core.lam(:omega, Core.var(1)))
+
+# Arithmetic: add(2, 3) — builtins are curried.
+add_2_3 = Core.app(Core.app(Core.builtin(:add), Core.lit(2)), Core.lit(3))
+
+{identity, const_fn, add_2_3}
+```
+
+## Evaluation
+
+Evaluation takes a core term and produces a *value* — a term in weak head normal form. Lambdas become closures that capture their environment. Applications beta-reduce. Builtins delta-reduce when fully applied to literals.
+
+```elixir
+ctx = Eval.default_ctx()
+
+# Evaluating a literal — trivial.
+IO.inspect(Eval.eval(ctx, Core.lit(42)), label: "Lit(42)")
+
+# Evaluating a lambda — captures environment as a closure.
+identity = Core.lam(:omega, Core.var(0))
+IO.inspect(Eval.eval(ctx, identity), label: "fn x -> x")
+
+# Beta reduction: (fn x -> x)(42) reduces to 42.
+app = Core.app(identity, Core.lit(42))
+IO.inspect(Eval.eval(ctx, app), label: "(fn x -> x)(42)")
+```
+
+## Delta reduction
+
+Builtin operations delta-reduce when all arguments are literals. Partially applied builtins accumulate arguments until they can fire.
+
+```elixir
+ctx = Eval.default_ctx()
+
+# add(2, 3) → 5
+IO.inspect(
+  Eval.eval(ctx, Core.app(Core.app(Core.builtin(:add), Core.lit(2)), Core.lit(3))),
+  label: "add(2, 3)"
+)
+
+# mul(4, 5) → 20
+IO.inspect(
+  Eval.eval(ctx, Core.app(Core.app(Core.builtin(:mul), Core.lit(4)), Core.lit(5))),
+  label: "mul(4, 5)"
+)
+
+# Partial application: add(2) → a partial builtin waiting for one more arg.
+IO.inspect(
+  Eval.eval(ctx, Core.app(Core.builtin(:add), Core.lit(2))),
+  label: "add(2)"
+)
+
+# Division by zero → stuck neutral (safe, never crashes).
+IO.inspect(
+  Eval.eval(ctx, Core.app(Core.app(Core.builtin(:div), Core.lit(1)), Core.lit(0))),
+  label: "div(1, 0)"
+)
+```
+
+## Stuck terms
+
+When a builtin is applied to a free variable (a *neutral*), it can't reduce — it gets "stuck." This is how NbE handles open terms like `x + 1` where `x` is unknown.
+
+```elixir
+int_type = Value.vbuiltin(:Int)
+x = Value.fresh_var(0, int_type)
+ctx = Eval.default_ctx([x])
+
+# add(x, 3) — x is a free variable, so the whole thing is stuck.
+term = Core.app(Core.app(Core.builtin(:add), Core.var(0)), Core.lit(3))
+result = Eval.eval(ctx, term)
+IO.inspect(result, label: "add(x, 3)")
+
+# But the structure is preserved — we can see it's add applied to x and 3.
+IO.puts("Stuck? #{match?({:vneutral, _, _}, result)}")
+```
+
+## Type-directed readback with eta-expansion
+
+Quote converts values back to core terms. It's *type-directed* — at function types, it eta-expands neutrals to lambdas. This means `f` and `fn x -> f(x)` are always equal after NbE, which is critical for usable dependent types.
+
+```elixir
+int = Value.vbuiltin(:Int)
+pi = Value.vpi(:omega, int, [], Core.builtin(:Int))
+
+# A neutral function f at level 0.
+f = Value.vneutral(pi, Value.nvar(0))
+
+# Quote at depth 1 (one variable in scope). The neutral gets eta-expanded!
+quoted = Quote.quote(1, pi, f)
+IO.inspect(quoted, label: "quote(f, Int → Int)")
+# {:lam, :omega, {:app, {:var, 1}, {:var, 0}}} — it's fn x -> f(x)!
+
+# Sigma types get eta-expanded too: a neutral pair p becomes (fst(p), snd(p)).
+sigma = Value.vsigma(int, [], Core.builtin(:Int))
+p = Value.vneutral(sigma, Value.nvar(0))
+IO.inspect(Quote.quote(1, sigma, p), label: "quote(p, Int × Int)")
+```
+
+## NbE roundtrip
+
+The key property: evaluating then quoting produces a *stable normal form*. Doing it twice gives the same result. This is what makes NbE correct for type equality checking.
+
+```elixir
+ctx = Eval.default_ctx()
+int = Value.vbuiltin(:Int)
+
+# (fn x -> x + 1)(2) should normalize to 3.
+body = Core.app(Core.app(Core.builtin(:add), Core.var(0)), Core.lit(1))
+term = Core.app(Core.lam(:omega, body), Core.lit(2))
+
+IO.inspect(term, label: "original term")
+
+val = Eval.eval(ctx, term)
+nf = Quote.quote(0, int, val)
+IO.inspect(nf, label: "normal form")
+
+# Normalizing the normal form gives the same thing — stability.
+val2 = Eval.eval(ctx, nf)
+nf2 = Quote.quote(0, int, val2)
+IO.inspect(nf == nf2, label: "stable?")
+```
+
+## Type equality via NbE
+
+This is the payoff: two types that *look* different can be proven equal by normalizing both.
+
+`Vec(a, 2 + 1)` and `Vec(a, 3)` are the same type because `2 + 1` normalizes to `3`.
+
+```elixir
+ctx = Eval.default_ctx()
+
+# Simulate: the type index "2 + 1"
+type_index_a = Core.app(Core.app(Core.builtin(:add), Core.lit(2)), Core.lit(1))
+
+# And the type index "3"
+type_index_b = Core.lit(3)
+
+# Normalize both.
+int = Value.vbuiltin(:Int)
+nf_a = Quote.quote(0, int, Eval.eval(ctx, type_index_a))
+nf_b = Quote.quote(0, int, Eval.eval(ctx, type_index_b))
+
+IO.inspect(nf_a, label: "normalize(2 + 1)")
+IO.inspect(nf_b, label: "normalize(3)")
+IO.inspect(nf_a == nf_b, label: "equal?")
+```
