@@ -1,0 +1,376 @@
+<!-- playbill:{"version":"0.1.0"} -->
+
+# Tier 3: Erasure, Codegen, Externs & Queries
+
+## Section
+
+```elixir
+Mix.install([
+  {:haruspex, path: "/Users/quinn/dev/beam_box/haruspex"},
+  {:pentiment, path: "/Users/quinn/dev/beam_box/pentiment"},
+  {:roux, path: "/Users/quinn/dev/beam_box/roux"},
+  {:constrain, path: "/Users/quinn/dev/beam_box/constrain"},
+  {:quail, path: "/Users/quinn/dev/beam_box/quail"}
+])
+```
+
+Tier 3 completes the compilation pipeline: **erasure** strips type-level content,
+**codegen** translates core terms to Elixir AST, **extern** declarations bind to
+existing Erlang/Elixir functions, and **roux queries** wire everything together
+for incremental computation.
+
+This notebook walks through each subsystem with real examples, starting from
+core terms and ending with compiled, callable BEAM modules.
+
+## Erasure
+
+The erasure pass removes all type-level and zero-multiplicity content from checked
+core terms. In a dependently typed language, types can appear in terms — but at
+runtime we don't need them. The eraser uses bidirectional mode switching: **check**
+when the type is known, **synth** when it must be discovered (e.g. in application
+function position).
+
+**Key rules:**
+
+* `Lam(:zero, body)` with `Pi(:zero, ...)` → unwrap, removing the erased parameter
+* `App(f, a)` where `f` has `Pi(:zero, ...)` → skip the argument entirely
+* `Pi`, `Sigma`, `Type` → replaced with `:erased`
+* Spans and metas are stripped/rejected
+
+### Polymorphic identity
+
+The identity function `id : {a : Type} -> a -> a` has two parameters at the
+surface level, but only one at runtime. Erasure removes the type parameter:
+
+```elixir
+alias Haruspex.Erase
+
+# def id({a : Type}, x : a) : a = x
+# Core: Lam(:zero, Lam(:omega, Var(0)))
+# Type: Pi(:zero, Type, Pi(:omega, Var(0), Var(1)))
+term = {:lam, :zero, {:lam, :omega, {:var, 0}}}
+type = {:pi, :zero, {:type, {:llit, 0}}, {:pi, :omega, {:var, 0}, {:var, 1}}}
+
+erased = Erase.erase(term, type)
+IO.inspect(erased, label: "erased id")
+```
+
+The zero lambda disappeared — only the omega (runtime) lambda remains.
+
+### Polymorphic const
+
+A more interesting example: `const : {a : Type} -> {b : Type} -> a -> b -> a`
+has two erased type parameters interleaved with two runtime parameters:
+
+```elixir
+# def const({a : Type}, {b : Type}, x : a, y : b) : a = x
+term = {:lam, :zero, {:lam, :zero, {:lam, :omega, {:lam, :omega, {:var, 1}}}}}
+
+type =
+  {:pi, :zero, {:type, {:llit, 0}},
+   {:pi, :zero, {:type, {:llit, 0}},
+    {:pi, :omega, {:var, 1}, {:pi, :omega, {:var, 1}, {:var, 3}}}}}
+
+erased = Erase.erase(term, type)
+IO.inspect(erased, label: "erased const")
+```
+
+```elixir
+# id(Int, 42) — the type argument Int should be erased
+id_type = {:pi, :zero, {:type, {:llit, 0}}, {:pi, :omega, {:var, 0}, {:var, 1}}}
+
+term = {:app, {:app, {:var, 0}, {:builtin, :Int}}, {:lit, 42}}
+type = {:builtin, :Int}
+ctx = struct!(Erase, types: [id_type])
+
+erased = Erase.erase(term, type, ctx)
+IO.inspect(erased, label: "erased id(Int, 42)")
+IO.puts("Type argument dropped — only id(42) remains")
+```
+
+## Codegen
+
+Codegen translates erased core terms into Elixir quoted AST. It performs
+**fully-applied optimization**: when a builtin or extern is fully applied, the
+call is inlined rather than emitting a chain of single-argument applications.
+
+For example, `App(App(Builtin(:add), 3), 4)` compiles to `3 + 4` instead of
+`(&Kernel.+/2).(3).(4)`.
+
+### Expression compilation
+
+```elixir
+alias Haruspex.Codegen
+
+# Fully-applied add: 3 + 4
+term = {:app, {:app, {:builtin, :add}, {:lit, 3}}, {:lit, 4}}
+IO.inspect(Codegen.eval_expr(term), label: "3 + 4")
+
+# Lambda: fn(x) -> fn(y) -> x + y
+add = {:lam, :omega, {:lam, :omega, {:app, {:app, {:builtin, :add}, {:var, 1}}, {:var, 0}}}}
+fun = Codegen.eval_expr(add)
+IO.inspect(fun.(10).(20), label: "add(10)(20)")
+
+# Partially applied: add(5) returns a closure
+partial = {:app, {:builtin, :add}, {:lit, 5}}
+add5 = Codegen.eval_expr(partial)
+IO.inspect(add5.(3), label: "add(5)(3)")
+```
+
+### Inspecting generated AST
+
+We can look at the actual Elixir AST that codegen produces:
+
+```elixir
+# Inlined: fully-applied add compiles to Kernel.+
+ast = Codegen.compile_expr({:app, {:app, {:builtin, :add}, {:lit, 3}}, {:lit, 4}})
+IO.puts("Fully applied:")
+IO.puts(Macro.to_string(ast))
+
+# Lambda compiles to fn
+ast = Codegen.compile_expr({:lam, :omega, {:var, 0}})
+IO.puts("\nIdentity lambda:")
+IO.puts(Macro.to_string(ast))
+```
+
+### Module compilation
+
+Codegen can compile a set of definitions into a full Elixir module with
+`def`/`defp` visibility, type erasure, and parameter extraction:
+
+```elixir
+alias Haruspex.Erase
+
+# Two definitions: add(x, y) and negate(x)
+add_body = {:lam, :omega, {:lam, :omega, {:app, {:app, {:builtin, :add}, {:var, 1}}, {:var, 0}}}}
+add_type = {:pi, :omega, {:builtin, :Int}, {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}}
+
+neg_body = {:lam, :omega, {:app, {:builtin, :neg}, {:var, 0}}}
+neg_type = {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}
+
+ast = Codegen.compile_module(Demo.Math, :all, [
+  {:add, add_type, add_body},
+  {:negate, neg_type, neg_body}
+])
+
+IO.puts(Macro.to_string(ast))
+```
+
+```elixir
+# Evaluate the module and call its functions
+Code.eval_quoted(ast)
+
+IO.inspect(Demo.Math.add(3, 4), label: "Demo.Math.add(3, 4)")
+IO.inspect(Demo.Math.negate(42), label: "Demo.Math.negate(42)")
+```
+
+### Polymorphic functions compile with erased parameters
+
+Type parameters marked `{...}` are erased before codegen. A polymorphic identity
+`id({a : Type}, x : a) : a` compiles to a single-argument function:
+
+```elixir
+body = {:lam, :zero, {:lam, :omega, {:var, 0}}}
+type = {:pi, :zero, {:type, {:llit, 0}}, {:pi, :omega, {:var, 0}, {:var, 1}}}
+
+ast = Codegen.compile_module(Demo.Poly, :all, [{:id, type, body}])
+IO.puts(Macro.to_string(ast))
+
+Code.eval_quoted(ast)
+IO.inspect(Demo.Poly.id(42), label: "id(42)")
+IO.inspect(Demo.Poly.id("hello"), label: "id(\"hello\")")
+```
+
+## Extern Functions
+
+The `@extern` annotation binds a Haruspex definition to an existing Erlang or
+Elixir function. The parser recognizes both Elixir modules (`Enum.map/2`) and
+Erlang atoms (`:math.sqrt/1`). Extern defs can be bodyless (pure FFI) or have
+a body (wrapper).
+
+The checker validates that the declared type's runtime arity matches the extern's
+arity. Codegen compiles externs to direct function calls.
+
+### Parsing extern declarations
+
+```elixir
+alias Haruspex.Parser
+
+# Erlang extern — bodyless
+{:ok, [def_ast]} = Parser.parse("@extern :math.sqrt/1\ndef sqrt(x : Float) : Float\n")
+{:def, _, {:sig, _, :sqrt, _, _, _, attrs}, body} = def_ast
+
+IO.inspect(attrs.extern, label: "extern ref")
+IO.inspect(body, label: "body (nil = bodyless)")
+```
+
+```elixir
+# Elixir extern with erased type parameters
+{:ok, [def_ast]} = Parser.parse("""
+@extern Enum.map/2
+def map({a : Type}, {b : Type}, xs : Int, f : Int) : Int
+""")
+
+{:def, _, {:sig, _, :map, _, params, _, attrs}, nil} = def_ast
+IO.inspect(attrs.extern, label: "extern ref")
+IO.puts("Params: #{length(params)} (2 erased + 2 runtime)")
+```
+
+### Elaboration and checking
+
+```elixir
+# Elaborate an extern def
+source = "@extern :math.sqrt/1\ndef sqrt(x : Float) : Float\n"
+{:ok, [def_ast]} = Parser.parse(source)
+
+ctx = Haruspex.Elaborate.new()
+{:ok, {name, type_core, body_core}, _ctx} = Haruspex.Elaborate.elaborate_def(ctx, def_ast)
+
+IO.inspect(name, label: "name")
+IO.inspect(type_core, label: "type")
+IO.inspect(body_core, label: "body")
+```
+
+```elixir
+# Check validates arity matches
+check_ctx = Haruspex.Check.new()
+{:ok, checked_body, _} = Haruspex.Check.check_definition(check_ctx, name, type_core, body_core)
+IO.inspect(checked_body, label: "checked (passes)")
+
+# Arity mismatch → error
+bad_type = {:pi, :omega, {:builtin, :Float}, {:pi, :omega, {:builtin, :Float}, {:builtin, :Float}}}
+result = Haruspex.Check.check_definition(check_ctx, :sqrt, bad_type, body_core)
+IO.inspect(result, label: "arity mismatch")
+```
+
+### Extern codegen
+
+Externs compile to direct Erlang/Elixir calls in modules, and to function
+captures as standalone expressions:
+
+```elixir
+# Standalone: compiles to a capture
+sqrt = Codegen.eval_expr({:extern, :math, :sqrt, 1})
+IO.inspect(sqrt.(16.0), label: "sqrt(16.0)")
+
+# Fully-applied: compiles to direct call
+result = Codegen.eval_expr({:app, {:extern, :math, :sqrt, 1}, {:lit, 25.0}})
+IO.inspect(result, label: "sqrt(25.0) direct")
+
+# In a module: generates def with direct call
+ext_type = {:pi, :omega, {:builtin, :Float}, {:builtin, :Float}}
+ext_body = {:extern, :math, :sqrt, 1}
+ast = Codegen.compile_module(Demo.Extern, :all, [{:sqrt, ext_type, ext_body}])
+IO.puts(Macro.to_string(ast))
+
+Code.eval_quoted(ast)
+IO.inspect(Demo.Extern.sqrt(9.0), label: "Demo.Extern.sqrt(9.0)")
+```
+
+## Roux Queries
+
+The roux query system wires erasure, codegen, and externs into an incremental
+pipeline. Each stage is a **memoized query** — roux tracks dependencies between
+queries and only re-executes what changed. The pipeline flows:
+
+```
+source_text → parse → elaborate → check → codegen → compile
+                                       ↘ diagnostics
+```
+
+Let's walk through the full pipeline, then demonstrate incremental re-computation.
+
+```elixir
+# Create a fresh roux database and register the Haruspex language
+db = Roux.Database.new()
+Roux.Lang.register(db, Haruspex)
+
+# Set source text for a file
+uri = "demo/math.hx"
+
+Roux.Input.set(db, :source_text, uri, """
+def add(x : Int, y : Int) : Int do x + y end
+def negate(n : Int) : Int do 0 - n end
+""")
+
+# Parse: creates Definition entities, returns their IDs
+{:ok, entity_ids} = Roux.Runtime.query(db, :haruspex_parse, uri)
+
+names =
+  Enum.map(entity_ids, fn id ->
+    Roux.Runtime.field(db, Haruspex.Definition, id, :name)
+  end)
+
+IO.inspect(names, label: "parsed definitions")
+```
+
+```elixir
+# Elaborate: surface AST → core terms (type + body)
+{:ok, {type_core, body_core}} = Roux.Runtime.query(db, :haruspex_elaborate, {uri, :add})
+IO.inspect(type_core, label: "add type")
+IO.inspect(body_core, label: "add body")
+```
+
+```elixir
+# Check: type-check the elaborated definition
+{:ok, {checked_type, checked_body}} = Roux.Runtime.query(db, :haruspex_check, {uri, :add})
+IO.inspect(checked_type, label: "checked type")
+IO.inspect(checked_body, label: "checked body")
+```
+
+```elixir
+# Compile: full pipeline → callable BEAM module
+{:ok, module} = Roux.Runtime.query(db, :haruspex_compile, uri)
+
+IO.inspect(module.add(3, 4), label: "add(3, 4)")
+IO.inspect(module.negate(5), label: "negate(5)")
+```
+
+### Diagnostics
+
+The diagnostics query collects errors from all definitions without halting the
+pipeline — valid definitions pass through while broken ones produce error messages:
+
+```elixir
+# Valid source → no diagnostics
+Roux.Input.set(db, :source_text, uri, "def id(x : Int) : Int do x end\n")
+diagnostics = Roux.Runtime.query(db, :haruspex_diagnostics, uri)
+IO.inspect(diagnostics, label: "valid source")
+
+# Bad source → error diagnostics
+Roux.Input.set(db, :source_text, uri, """
+def good(x : Int) : Int do x end
+def bad(x : Int) do x end
+""")
+diagnostics = Roux.Runtime.query(db, :haruspex_diagnostics, uri)
+
+for d <- diagnostics do
+  IO.puts("#{d.severity}: #{d.message}")
+end
+```
+
+### Incremental re-computation
+
+Roux's key feature is **incremental updates**. When source changes, only affected
+queries re-execute. Let's modify source and see the pipeline produce new results:
+
+```elixir
+# Start with x + 1
+Roux.Input.set(db, :source_text, uri, "def f(x : Int) : Int do x + 1 end\n")
+{:ok, mod1} = Roux.Runtime.query(db, :haruspex_compile, uri)
+IO.inspect(mod1.f(10), label: "f(10) v1")
+
+# Change body to x + 2 — only affected queries re-run
+Roux.Input.set(db, :source_text, uri, "def f(x : Int) : Int do x + 2 end\n")
+{:ok, mod2} = Roux.Runtime.query(db, :haruspex_compile, uri)
+IO.inspect(mod2.f(10), label: "f(10) v2")
+
+IO.puts("Same pipeline, different results — incremental!")
+```
+
+```elixir
+# Extern through the full pipeline
+Roux.Input.set(db, :source_text, uri, "@extern :math.sqrt/1\ndef sqrt(x : Float) : Float\n")
+{:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, uri)
+IO.inspect(mod.sqrt(144.0), label: "sqrt(144.0)")
+```
