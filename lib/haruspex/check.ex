@@ -326,6 +326,22 @@ defmodule Haruspex.Check do
   """
   @spec check_definition(t(), atom(), Core.expr(), Core.expr()) ::
           {:ok, Core.expr(), t()} | {:error, type_error()}
+  def check_definition(ctx, name, type_term, {:extern, mod, fun, arity} = body_term) do
+    # Extern: trust the declared type, validate arity matches.
+    runtime_params = count_runtime_params(type_term)
+
+    if runtime_params != arity do
+      {:error, {:extern_arity_mismatch, name, mod, fun, arity, runtime_params}}
+    else
+      type_val = eval_in(ctx, type_term)
+      _def_ctx = extend_ctx(ctx, name, type_val, :omega)
+
+      with {:ok, ctx} <- post_process(ctx) do
+        {:ok, body_term, ctx}
+      end
+    end
+  end
+
   def check_definition(ctx, name, type_term, body_term) do
     type_val = eval_in(ctx, type_term)
     def_ctx = extend_ctx(ctx, name, type_val, :omega)
@@ -492,6 +508,11 @@ defmodule Haruspex.Check do
   defp builtin_op_type(_name) do
     {:vtype, {:llit, 0}}
   end
+
+  # Count non-erased (omega) parameters in a core type.
+  defp count_runtime_params({:pi, :omega, _dom, cod}), do: 1 + count_runtime_params(cod)
+  defp count_runtime_params({:pi, :zero, _dom, cod}), do: count_runtime_params(cod)
+  defp count_runtime_params(_), do: 0
 
   # ============================================================================
   # check_is_type

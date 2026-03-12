@@ -244,6 +244,23 @@ defmodule Haruspex.Codegen do
     {[var | params], compiled_body}
   end
 
+  defp compile_function({:extern, mod, fun, arity}, names) do
+    # Generate params for each arity position and compile to a direct call.
+    {params, param_vars} =
+      Enum.reduce(1..arity//1, {[], []}, fn _, {ps, vs} ->
+        var_name = fresh_name(names ++ Enum.map(ps, fn {name, _, _} -> name end))
+        var = Macro.var(var_name, __MODULE__)
+        {ps ++ [var], vs ++ [var]}
+      end)
+
+    body_ast =
+      quote do
+        unquote(mod).unquote(fun)(unquote_splicing(param_vars))
+      end
+
+    {params, body_ast}
+  end
+
   defp compile_function(body, names) do
     {[], compile(body, names)}
   end

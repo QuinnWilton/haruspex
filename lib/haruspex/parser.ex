@@ -292,7 +292,12 @@ defmodule Haruspex.Parser do
       {tag, span, val} = peek(state)
 
       if tag == :int do
-        mod = Module.concat(mod_parts)
+        mod =
+          case mod_parts do
+            {:erlang_mod, atom} -> atom
+            parts when is_list(parts) -> Module.concat(parts)
+          end
+
         {:ok, {mod, func, val}, advance(state)}
       else
         {:error, "expected arity (integer) after /", span}
@@ -303,10 +308,16 @@ defmodule Haruspex.Parser do
   defp parse_module_path(state) do
     {tag, _span, val} = peek(state)
 
-    if tag == :upper_ident do
-      parse_module_path_rest(advance(state), [val])
-    else
-      {:error, "expected module name", span_of(state)}
+    cond do
+      tag == :upper_ident ->
+        parse_module_path_rest(advance(state), [val])
+
+      tag == :atom_lit ->
+        # Erlang module: :math, :lists, etc. — use the atom directly, not Module.concat.
+        {:ok, {:erlang_mod, val}, advance(state)}
+
+      true ->
+        {:error, "expected module name", span_of(state)}
     end
   end
 
@@ -332,6 +343,37 @@ defmodule Haruspex.Parser do
   # ============================================================================
   # Definitions
   # ============================================================================
+
+  defp parse_def(state, %{extern: extern} = attrs) when extern != nil do
+    # Extern defs may have an optional body. If no `do` follows, the def is bodyless.
+    {_, def_span, _} = peek(state)
+    state = advance(state)
+
+    with {:ok, name, name_span, state} <- expect_ident(state),
+         {:ok, params, state} <- parse_optional_params(state),
+         {:ok, ret_type, state} <- parse_optional_return_type(state) do
+      case peek(state) do
+        {:do, _, _} ->
+          with {:ok, state} <- expect(state, :do) do
+            sig_span = merge(def_span, span_of(state))
+            sig = {:sig, sig_span, name, name_span, params, ret_type, attrs}
+
+            with {:ok, body, state} <- parse_block(state) do
+              {_, end_span, _} = peek(state)
+
+              with {:ok, state} <- expect(state, :end) do
+                {:ok, {:def, merge(def_span, end_span), sig, body}, state}
+              end
+            end
+          end
+
+        _ ->
+          sig_span = merge(def_span, span_of(state))
+          sig = {:sig, sig_span, name, name_span, params, ret_type, attrs}
+          {:ok, {:def, sig_span, sig, nil}, state}
+      end
+    end
+  end
 
   defp parse_def(state, attrs) do
     {_, def_span, _} = peek(state)
@@ -1208,6 +1250,9 @@ defmodule Haruspex.Parser do
     case peek(state) do
       {:ident, span, val} ->
         {:ok, {:var, span, val}, advance(state)}
+
+      {:upper_ident, span, :Type} ->
+        {:ok, {:type_universe, span, nil}, advance(state)}
 
       {:upper_ident, span, val} ->
         {:ok, {:var, span, val}, advance(state)}

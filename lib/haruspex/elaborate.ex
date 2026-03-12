@@ -238,6 +238,24 @@ defmodule Haruspex.Elaborate do
           {:ok, {atom(), Core.expr(), Core.expr()}, t()} | {:error, elab_error()}
   def elaborate_def(
         ctx,
+        {:def, span,
+         {:sig, _sig_span, name, _name_span, params, return_type,
+          %{extern: {mod, fun, arity}} = _attrs}, nil}
+      ) do
+    case return_type do
+      nil ->
+        {:error, {:missing_return_type, name, span}}
+
+      _ ->
+        # Extern: elaborate only the type, use {:extern, mod, fun, arity} as body.
+        with {:ok, type_core, ctx} <- elaborate_pi_type(ctx, params, return_type) do
+          {:ok, {name, type_core, {:extern, mod, fun, arity}}, ctx}
+        end
+    end
+  end
+
+  def elaborate_def(
+        ctx,
         {:def, span, {:sig, _sig_span, name, _name_span, params, return_type, _attrs}, body}
       ) do
     case return_type do

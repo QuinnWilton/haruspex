@@ -267,7 +267,7 @@ defmodule Haruspex.ParserTest do
 
     test "implicit pi: {a : Type} -> B" do
       expr = parse_expr!("{a : Type} -> B")
-      assert {:pi, _, {:a, :omega, true}, {:var, _, :Type}, {:var, _, :B}} = expr
+      assert {:pi, _, {:a, :omega, true}, {:type_universe, _, nil}, {:var, _, :B}} = expr
     end
   end
 
@@ -333,7 +333,7 @@ defmodule Haruspex.ParserTest do
     test "lambda with implicit param" do
       expr = parse_expr!("fn({a : Type}) -> a end")
       assert {:fn, _, [param], {:var, _, :a}} = expr
-      assert {:param, _, {:a, :omega, true}, {:var, _, :Type}} = param
+      assert {:param, _, {:a, :omega, true}, {:type_universe, _, nil}} = param
     end
 
     test "lambda with wildcard param" do
@@ -465,7 +465,7 @@ defmodule Haruspex.ParserTest do
       [decl] = parse!("def id({a : Type}, x : a) : a do x end")
       assert {:def, _, sig, _} = decl
       assert {:sig, _, :id, _, [implicit_param, explicit_param], _, _} = sig
-      assert {:param, _, {:a, :omega, true}, {:var, _, :Type}} = implicit_param
+      assert {:param, _, {:a, :omega, true}, {:type_universe, _, nil}} = implicit_param
       assert {:param, _, {:x, :omega, false}, {:var, _, :a}} = explicit_param
     end
 
@@ -490,7 +490,7 @@ defmodule Haruspex.ParserTest do
 
     test "parameterized type with constructors" do
       [decl] = parse!("type Option(a : Type)\n  | none\n  | some(a)")
-      assert {:type_decl, _, :Option, [{:a, {:var, _, :Type}}], constructors} = decl
+      assert {:type_decl, _, :Option, [{:a, {:type_universe, _, nil}}], constructors} = decl
 
       assert [
                {:constructor, _, :none, [], nil},
@@ -500,7 +500,9 @@ defmodule Haruspex.ParserTest do
 
     test "type with kinded parameter" do
       [decl] = parse!("type Vec(a : Type, n : Nat) | nil")
-      assert {:type_decl, _, :Vec, [{:a, {:var, _, :Type}}, {:n, {:var, _, :Nat}}], _} = decl
+
+      assert {:type_decl, _, :Vec, [{:a, {:type_universe, _, nil}}, {:n, {:var, _, :Nat}}], _} =
+               decl
     end
 
     test "GADT constructor with return type" do
@@ -509,7 +511,7 @@ defmodule Haruspex.ParserTest do
           "type Expr(a : Type)\n  | lit(Int) : Expr(Int)\n  | add(Expr(Int), Expr(Int)) : Expr(Int)"
         )
 
-      assert {:type_decl, _, :Expr, [{:a, {:var, _, :Type}}], [lit, add]} = decl
+      assert {:type_decl, _, :Expr, [{:a, {:type_universe, _, nil}}], [lit, add]} = decl
 
       assert {:constructor, _, :lit, [{:var, _, :Int}],
               {:app, _, {:var, _, :Expr}, [{:var, _, :Int}]}} = lit
@@ -547,7 +549,7 @@ defmodule Haruspex.ParserTest do
     test "simple implicit declaration" do
       [decl] = parse!("@implicit {a : Type}")
       assert {:implicit_decl, _, [param]} = decl
-      assert {:param, _, {:a, :omega, true}, {:var, _, :Type}} = param
+      assert {:param, _, {:a, :omega, true}, {:type_universe, _, nil}} = param
     end
   end
 
@@ -589,7 +591,7 @@ defmodule Haruspex.ParserTest do
 
       [decl] = parse!(source)
       assert {:class_decl, _, :Eq, [param], [], [method]} = decl
-      assert {:param, _, {:a, :omega, false}, {:var, _, :Type}} = param
+      assert {:param, _, {:a, :omega, false}, {:type_universe, _, nil}} = param
       assert {:method_sig, _, :eq, _type} = method
     end
   end
@@ -1014,7 +1016,7 @@ defmodule Haruspex.ParserTest do
       {:ok, program} = Parser.parse(source)
       assert [import_decl, type_decl, def_decl] = program
       assert {:import, _, [:Data, :List], nil} = import_decl
-      assert {:type_decl, _, :Option, [{:a, {:var, _, :Type}}], _} = type_decl
+      assert {:type_decl, _, :Option, [{:a, {:type_universe, _, nil}}], _} = type_decl
       assert {:def, _, {:sig, _, :map, _, _, _, _}, {:case, _, _, _}} = def_decl
     end
   end
@@ -1066,7 +1068,7 @@ defmodule Haruspex.ParserTest do
 
     test "parameterized type" do
       {:ok, [type_decl | _]} = Parser.parse(fixture("list.hx"))
-      assert {:type_decl, _, :List, [{:a, {:var, _, :Type}}], _} = type_decl
+      assert {:type_decl, _, :List, [{:a, {:type_universe, _, nil}}], _} = type_decl
     end
 
     test "lambda in function argument" do
@@ -1127,7 +1129,7 @@ defmodule Haruspex.ParserTest do
     test "kinded type parameters" do
       {:ok, [_, type_decl | _]} = Parser.parse(fixture("vec.hx"))
 
-      assert {:type_decl, _, :Vec, [{:n, {:var, _, :Nat}}, {:a, {:var, _, :Type}}], ctors} =
+      assert {:type_decl, _, :Vec, [{:n, {:var, _, :Nat}}, {:a, {:type_universe, _, nil}}], ctors} =
                type_decl
 
       assert [{:constructor, _, :vnil, [], ret1}, {:constructor, _, :vcons, [_, _], ret2}] = ctors
@@ -1207,7 +1209,7 @@ defmodule Haruspex.ParserTest do
     test "implicit declaration" do
       {:ok, [var_decl | _]} = Parser.parse(fixture("refinement.hx"))
       assert {:implicit_decl, _, [param]} = var_decl
-      assert {:param, _, {:a, :omega, true}, {:var, _, :Type}} = param
+      assert {:param, _, {:a, :omega, true}, {:type_universe, _, nil}} = param
     end
 
     test "@extern annotation" do
