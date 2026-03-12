@@ -1,0 +1,492 @@
+defmodule Haruspex.CheckTest do
+  use ExUnit.Case, async: true
+  use ExUnitProperties
+
+  alias Haruspex.Check
+  alias Haruspex.Context
+  alias Haruspex.Unify.MetaState
+
+  # ============================================================================
+  # Synth tests
+  # ============================================================================
+
+  describe "synth/2 — variables" do
+    test "var at index 0 synthesizes the bound type" do
+      ctx =
+        Check.new()
+        |> extend(:x, {:vbuiltin, :Int}, :omega)
+
+      assert {:ok, {:var, 0}, {:vbuiltin, :Int}, _ctx} = Check.synth(ctx, {:var, 0})
+    end
+
+    test "var at deeper index synthesizes correct type" do
+      ctx =
+        Check.new()
+        |> extend(:x, {:vbuiltin, :Int}, :omega)
+        |> extend(:y, {:vbuiltin, :Float}, :omega)
+
+      assert {:ok, {:var, 1}, {:vbuiltin, :Int}, _ctx} = Check.synth(ctx, {:var, 1})
+      assert {:ok, {:var, 0}, {:vbuiltin, :Float}, _ctx} = Check.synth(ctx, {:var, 0})
+    end
+  end
+
+  describe "synth/2 — literals" do
+    test "integer literal synthesizes Int" do
+      assert {:ok, {:lit, 42}, {:vbuiltin, :Int}, _} = Check.synth(Check.new(), {:lit, 42})
+    end
+
+    test "float literal synthesizes Float" do
+      assert {:ok, {:lit, 3.14}, {:vbuiltin, :Float}, _} = Check.synth(Check.new(), {:lit, 3.14})
+    end
+
+    test "string literal synthesizes String" do
+      assert {:ok, {:lit, "hello"}, {:vbuiltin, :String}, _} =
+               Check.synth(Check.new(), {:lit, "hello"})
+    end
+
+    test "boolean literal synthesizes Atom" do
+      assert {:ok, {:lit, true}, {:vbuiltin, :Atom}, _} = Check.synth(Check.new(), {:lit, true})
+      assert {:ok, {:lit, false}, {:vbuiltin, :Atom}, _} = Check.synth(Check.new(), {:lit, false})
+    end
+
+    test "atom literal synthesizes Atom" do
+      assert {:ok, {:lit, :foo}, {:vbuiltin, :Atom}, _} = Check.synth(Check.new(), {:lit, :foo})
+    end
+  end
+
+  describe "synth/2 — types and universes" do
+    test "builtin Int synthesizes Type 0" do
+      assert {:ok, {:builtin, :Int}, {:vtype, {:llit, 0}}, _} =
+               Check.synth(Check.new(), {:builtin, :Int})
+    end
+
+    test "builtin Float synthesizes Type 0" do
+      assert {:ok, {:builtin, :Float}, {:vtype, {:llit, 0}}, _} =
+               Check.synth(Check.new(), {:builtin, :Float})
+    end
+
+    test "Type 0 synthesizes Type 1" do
+      assert {:ok, {:type, {:llit, 0}}, {:vtype, {:lsucc, {:llit, 0}}}, _} =
+               Check.synth(Check.new(), {:type, {:llit, 0}})
+    end
+
+    test "Type 1 synthesizes Type 2" do
+      assert {:ok, {:type, {:llit, 1}}, {:vtype, {:lsucc, {:llit, 1}}}, _} =
+               Check.synth(Check.new(), {:type, {:llit, 1}})
+    end
+  end
+
+  describe "synth/2 — Pi types" do
+    test "Pi(omega, Int, Int) synthesizes a Type" do
+      {:ok, _term, type, _ctx} =
+        Check.synth(Check.new(), {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}})
+
+      assert {:vtype, _level} = type
+    end
+  end
+
+  describe "synth/2 — Sigma types" do
+    test "Sigma(Int, Int) synthesizes a Type" do
+      {:ok, _term, type, _ctx} =
+        Check.synth(Check.new(), {:sigma, {:builtin, :Int}, {:builtin, :Int}})
+
+      assert {:vtype, _level} = type
+    end
+  end
+
+  describe "synth/2 — application" do
+    test "applying a function binding to a literal" do
+      # Put f : Pi(:omega, Int, Int) in context, then synth (f 42).
+      pi_type = {:vpi, :omega, {:vbuiltin, :Int}, [], {:builtin, :Int}}
+
+      ctx =
+        Check.new()
+        |> extend(:f, pi_type, :omega)
+
+      assert {:ok, {:app, {:var, 0}, {:lit, 42}}, result_type, _ctx} =
+               Check.synth(ctx, {:app, {:var, 0}, {:lit, 42}})
+
+      assert result_type == {:vbuiltin, :Int}
+    end
+  end
+
+  describe "synth/2 — pairs and projections" do
+    test "pair of literals can be synthed" do
+      {:ok, {:pair, {:lit, 1}, {:lit, 2}}, sig_type, _ctx} =
+        Check.synth(Check.new(), {:pair, {:lit, 1}, {:lit, 2}})
+
+      assert {:vsigma, {:vbuiltin, :Int}, _, _} = sig_type
+    end
+
+    test "fst of a synthed pair returns first component type" do
+      {:ok, _term, fst_type, _ctx} =
+        Check.synth(Check.new(), {:fst, {:pair, {:lit, 1}, {:lit, 2}}})
+
+      assert fst_type == {:vbuiltin, :Int}
+    end
+
+    test "snd of a synthed pair returns second component type" do
+      {:ok, _term, snd_type, _ctx} =
+        Check.synth(Check.new(), {:snd, {:pair, {:lit, 1}, {:lit, 2}}})
+
+      assert snd_type == {:vbuiltin, :Int}
+    end
+  end
+
+  describe "synth/2 — let" do
+    test "let x = 1 in x synthesizes Int" do
+      {:ok, {:let, {:lit, 1}, {:var, 0}}, type, _ctx} =
+        Check.synth(Check.new(), {:let, {:lit, 1}, {:var, 0}})
+
+      assert type == {:vbuiltin, :Int}
+    end
+  end
+
+  describe "synth/2 — builtins" do
+    test "builtin :add synthesizes Int -> Int -> Int" do
+      {:ok, {:builtin, :add}, type, _ctx} = Check.synth(Check.new(), {:builtin, :add})
+      assert {:vpi, :omega, {:vbuiltin, :Int}, [], _cod} = type
+    end
+
+    test "builtin :fadd synthesizes Float -> Float -> Float" do
+      {:ok, {:builtin, :fadd}, type, _ctx} = Check.synth(Check.new(), {:builtin, :fadd})
+      assert {:vpi, :omega, {:vbuiltin, :Float}, [], _cod} = type
+    end
+
+    test "builtin :neg synthesizes Int -> Int" do
+      {:ok, {:builtin, :neg}, type, _ctx} = Check.synth(Check.new(), {:builtin, :neg})
+      assert {:vpi, :omega, {:vbuiltin, :Int}, [], {:builtin, :Int}} = type
+    end
+
+    test "builtin :eq synthesizes Int -> Int -> Atom" do
+      {:ok, {:builtin, :eq}, type, _ctx} = Check.synth(Check.new(), {:builtin, :eq})
+      assert {:vpi, :omega, {:vbuiltin, :Int}, [], _cod} = type
+    end
+  end
+
+  describe "synth/2 — meta" do
+    test "unsolved meta synthesizes its type" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      ctx = Check.from_meta_state(ms)
+
+      assert {:ok, {:meta, ^id}, {:vbuiltin, :Int}, _} = Check.synth(ctx, {:meta, id})
+    end
+
+    test "solved meta synthesizes through the solution" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vlit, 42})
+      ctx = Check.from_meta_state(ms)
+
+      {:ok, term, type, _ctx} = Check.synth(ctx, {:meta, id})
+      assert type == {:vbuiltin, :Int}
+      assert term == {:lit, 42}
+    end
+  end
+
+  describe "synth/2 — spanned" do
+    test "spanned unwraps to inner term" do
+      span = Pentiment.Span.Byte.new(0, 5)
+
+      assert {:ok, {:lit, 42}, {:vbuiltin, :Int}, _} =
+               Check.synth(Check.new(), {:spanned, span, {:lit, 42}})
+    end
+  end
+
+  # ============================================================================
+  # Check tests
+  # ============================================================================
+
+  describe "check/3 — lambda against Pi" do
+    test "identity lambda checks against Pi(omega, Int, Int)" do
+      pi_type = {:vpi, :omega, {:vbuiltin, :Int}, [], {:builtin, :Int}}
+
+      assert {:ok, {:lam, :omega, {:var, 0}}, _ctx} =
+               Check.check(Check.new(), {:lam, :omega, {:var, 0}}, pi_type)
+    end
+
+    test "constant lambda checks against Pi" do
+      pi_type = {:vpi, :omega, {:vbuiltin, :Int}, [], {:builtin, :Int}}
+
+      assert {:ok, {:lam, :omega, {:lit, 7}}, _ctx} =
+               Check.check(Check.new(), {:lam, :omega, {:lit, 7}}, pi_type)
+    end
+  end
+
+  describe "check/3 — pair against Sigma" do
+    test "pair of literals checks against non-dependent Sigma" do
+      sig_type = {:vsigma, {:vbuiltin, :Int}, [], {:builtin, :Int}}
+
+      assert {:ok, {:pair, {:lit, 1}, {:lit, 2}}, _ctx} =
+               Check.check(Check.new(), {:pair, {:lit, 1}, {:lit, 2}}, sig_type)
+    end
+  end
+
+  describe "check/3 — let" do
+    test "let x = 1 in x checks against Int" do
+      assert {:ok, {:let, {:lit, 1}, {:var, 0}}, _ctx} =
+               Check.check(Check.new(), {:let, {:lit, 1}, {:var, 0}}, {:vbuiltin, :Int})
+    end
+  end
+
+  describe "check/3 — fallback (synth + unify)" do
+    test "literal checks against its own type" do
+      assert {:ok, {:lit, 42}, _ctx} =
+               Check.check(Check.new(), {:lit, 42}, {:vbuiltin, :Int})
+    end
+
+    test "builtin type checks against Type 0" do
+      assert {:ok, {:builtin, :Int}, _ctx} =
+               Check.check(Check.new(), {:builtin, :Int}, {:vtype, {:llit, 0}})
+    end
+  end
+
+  # ============================================================================
+  # Error tests
+  # ============================================================================
+
+  describe "errors" do
+    test "applying a non-function produces not_a_function" do
+      assert {:error, {:not_a_function, {:vbuiltin, :Int}}} =
+               Check.synth(Check.new(), {:app, {:lit, 42}, {:lit, 1}})
+    end
+
+    test "projecting from a non-pair produces not_a_pair" do
+      assert {:error, {:not_a_pair, {:vbuiltin, :Int}}} =
+               Check.synth(Check.new(), {:fst, {:lit, 42}})
+    end
+
+    test "snd of a non-pair produces not_a_pair" do
+      assert {:error, {:not_a_pair, {:vbuiltin, :Int}}} =
+               Check.synth(Check.new(), {:snd, {:lit, 42}})
+    end
+
+    test "type mismatch: literal checked against wrong type" do
+      assert {:error, {:type_mismatch, {:vbuiltin, :Float}, {:vbuiltin, :Int}}} =
+               Check.check(Check.new(), {:lit, 42}, {:vbuiltin, :Float})
+    end
+
+    test "multiplicity mismatch between lambda and Pi" do
+      pi_type = {:vpi, :omega, {:vbuiltin, :Int}, [], {:builtin, :Int}}
+
+      assert {:error, {:multiplicity_mismatch, :omega, :zero}} =
+               Check.check(Check.new(), {:lam, :zero, {:var, 0}}, pi_type)
+    end
+
+    test "not_a_type when Pi domain is not a type" do
+      # Pi where domain is a literal (not a type).
+      assert {:error, {:not_a_type, {:vbuiltin, :Int}}} =
+               Check.synth(Check.new(), {:pi, :omega, {:lit, 42}, {:builtin, :Int}})
+    end
+  end
+
+  # ============================================================================
+  # Multiplicity tests
+  # ============================================================================
+
+  describe "multiplicity tracking" do
+    test "zero-mult lambda that uses the binding fails" do
+      # Lambda with :zero mult that uses var 0 — should fail.
+      pi_type = {:vpi, :zero, {:vbuiltin, :Int}, [], {:builtin, :Int}}
+
+      assert {:error, {:multiplicity_violation, _name, :zero, 1}} =
+               Check.check(Check.new(), {:lam, :zero, {:var, 0}}, pi_type)
+    end
+
+    test "zero-mult lambda that does not use the binding succeeds" do
+      pi_type = {:vpi, :zero, {:vbuiltin, :Int}, [], {:builtin, :Int}}
+
+      assert {:ok, {:lam, :zero, {:lit, 42}}, _ctx} =
+               Check.check(Check.new(), {:lam, :zero, {:lit, 42}}, pi_type)
+    end
+
+    test "omega-mult lambda can use the binding multiple times" do
+      # Build Pi(:omega, Int, Int) — body uses var 0 (identity).
+      pi_type = {:vpi, :omega, {:vbuiltin, :Int}, [], {:builtin, :Int}}
+
+      assert {:ok, {:lam, :omega, {:var, 0}}, _ctx} =
+               Check.check(Check.new(), {:lam, :omega, {:var, 0}}, pi_type)
+    end
+  end
+
+  # ============================================================================
+  # Zonking tests
+  # ============================================================================
+
+  describe "zonk/3" do
+    test "solved meta is replaced by its solution" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vlit, 42})
+
+      assert Check.zonk(ms, 0, {:meta, id}) == {:lit, 42}
+    end
+
+    test "unsolved meta is left as-is" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+
+      assert Check.zonk(ms, 0, {:meta, id}) == {:meta, id}
+    end
+
+    test "zonk descends into app" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vlit, 1})
+
+      assert Check.zonk(ms, 0, {:app, {:meta, id}, {:lit, 2}}) == {:app, {:lit, 1}, {:lit, 2}}
+    end
+
+    test "zonk descends into lam" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vlit, 99})
+
+      assert Check.zonk(ms, 0, {:lam, :omega, {:meta, id}}) == {:lam, :omega, {:lit, 99}}
+    end
+
+    test "zonk descends into pi" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vtype, {:llit, 0}}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vbuiltin, :Int})
+
+      assert Check.zonk(ms, 0, {:pi, :omega, {:meta, id}, {:builtin, :Int}}) ==
+               {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}
+    end
+
+    test "zonk descends into pair" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vlit, 5})
+
+      assert Check.zonk(ms, 0, {:pair, {:meta, id}, {:lit, 6}}) == {:pair, {:lit, 5}, {:lit, 6}}
+    end
+
+    test "zonk leaves non-meta terms unchanged" do
+      ms = MetaState.new()
+      assert Check.zonk(ms, 0, {:lit, 42}) == {:lit, 42}
+      assert Check.zonk(ms, 0, {:var, 0}) == {:var, 0}
+      assert Check.zonk(ms, 0, {:builtin, :Int}) == {:builtin, :Int}
+      assert Check.zonk(ms, 0, {:type, {:llit, 0}}) == {:type, {:llit, 0}}
+    end
+  end
+
+  # ============================================================================
+  # Post-processing tests
+  # ============================================================================
+
+  describe "post_process/1" do
+    test "succeeds with no metas and no constraints" do
+      assert {:ok, _ctx} = Check.post_process(Check.new())
+    end
+
+    test "hole meta produces a hole report" do
+      ms = MetaState.new()
+      {_id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :hole)
+      ctx = Check.from_meta_state(ms)
+
+      assert {:ok, ctx} = Check.post_process(ctx)
+      assert [%{expected_type: "Int", bindings: []}] = ctx.hole_reports
+    end
+
+    test "unsolved implicit meta produces an error" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      ctx = Check.from_meta_state(ms)
+
+      assert {:error, {:unsolved_meta, ^id, {:vbuiltin, :Int}}} = Check.post_process(ctx)
+    end
+
+    test "level solving succeeds for empty constraints" do
+      assert {:ok, _} = Check.post_process(Check.new())
+    end
+  end
+
+  # ============================================================================
+  # Definition checking tests
+  # ============================================================================
+
+  describe "check_definition/4" do
+    test "checks identity function definition" do
+      # type: Pi(:omega, Int, Int)
+      # body: lam(:omega, var(0)) — identity, but in check_definition the body is
+      #       checked inside a context extended with the definition name.
+      #       So var(0) refers to the lambda's argument, var(1) to the definition itself.
+      type_term = {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}
+      body_term = {:lam, :omega, {:var, 0}}
+
+      assert {:ok, checked_body, _ctx} =
+               Check.check_definition(Check.new(), :id, type_term, body_term)
+
+      assert {:lam, :omega, {:var, 0}} = checked_body
+    end
+
+    test "checks constant function definition" do
+      type_term = {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}
+      body_term = {:lam, :omega, {:lit, 0}}
+
+      assert {:ok, {:lam, :omega, {:lit, 0}}, _ctx} =
+               Check.check_definition(Check.new(), :zero, type_term, body_term)
+    end
+  end
+
+  # ============================================================================
+  # Property tests
+  # ============================================================================
+
+  describe "properties" do
+    property "synth is deterministic for literals" do
+      check all(
+              lit <-
+                one_of([
+                  map(integer(), &{:lit, &1}),
+                  map(float(min: -1.0e10, max: 1.0e10), &{:lit, &1}),
+                  map(string(:alphanumeric, min_length: 0, max_length: 10), &{:lit, &1})
+                ])
+            ) do
+        {:ok, term1, type1, _} = Check.synth(Check.new(), lit)
+        {:ok, term2, type2, _} = Check.synth(Check.new(), lit)
+
+        assert term1 == term2
+        assert type1 == type2
+      end
+    end
+
+    property "type preservation: synthed literals check against their own type" do
+      check all(
+              lit <-
+                one_of([
+                  map(integer(), &{:lit, &1}),
+                  map(float(min: -1.0e10, max: 1.0e10), &{:lit, &1}),
+                  map(string(:alphanumeric, min_length: 0, max_length: 10), &{:lit, &1})
+                ])
+            ) do
+        {:ok, _term, type, _ctx} = Check.synth(Check.new(), lit)
+        assert {:ok, _, _} = Check.check(Check.new(), lit, type)
+      end
+    end
+
+    property "zonk is idempotent for terms without metas" do
+      check all(
+              lit <-
+                one_of([
+                  map(integer(), &{:lit, &1}),
+                  map(float(min: -1.0e10, max: 1.0e10), &{:lit, &1})
+                ])
+            ) do
+        ms = MetaState.new()
+        assert Check.zonk(ms, 0, lit) == lit
+      end
+    end
+  end
+
+  # ============================================================================
+  # Helpers
+  # ============================================================================
+
+  # Extend a check context by directly manipulating the inner context.
+  defp extend(ctx, name, type, mult) do
+    %{ctx | context: Context.extend(ctx.context, name, type, mult), names: ctx.names ++ [name]}
+  end
+end
