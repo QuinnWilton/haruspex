@@ -20,17 +20,6 @@ Implement mutual block signature collection and cross-reference checking. Single
 
 After all bodies are checked, verify that all names in the mutual block were actually used by at least one other member (warning if a name in a `mutual` block is not referenced by any sibling — it should be a standalone `def` instead).
 
-### Roux entity
-
-A mutual block creates a `Haruspex.MutualGroup` entity:
-
-```elixir
-defentity Haruspex.MutualGroup do
-  identity [:uri, :group_id]
-  field :definitions  # [atom()] — names in the group
-end
-```
-
 ### Public API
 
 ```elixir
@@ -53,6 +42,20 @@ end
 - Even/odd example from d25 type-checks
 - Self-recursive length function type-checks
 - Mutual block with 3+ members
+
+## Deferred
+
+### Roux entity (deferred to integration tier)
+
+The `Haruspex.MutualGroup` roux entity will be implemented when roux integration
+is built. The entity definition is:
+
+```elixir
+defentity Haruspex.MutualGroup do
+  identity [:uri, :group_id]
+  field :definitions  # [atom()] — names in the group
+end
+```
 
 ## Verification
 

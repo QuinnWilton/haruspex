@@ -64,6 +64,17 @@ After checking a definition:
 
 Note: `check_ctx` is threaded (contains mutable MetaState, usage counters, level constraints).
 
+### Implicit argument insertion
+
+When checking/synthesizing `App(f, args)` where `f` has type `Pi(:zero, dom, cod)`:
+1. The `:zero` multiplicity signals an implicit parameter
+2. Create `InsertedMeta(fresh_id, mask)` with mask from current context
+3. Apply `f` to the inserted meta
+4. Continue checking remaining args against the codomain
+
+This was deferred from tier2-elaboration because it requires the synthesized type
+of the function to determine implicit positions.
+
 ## Testing strategy
 
 ### Unit tests (`test/haruspex/check_test.exs`)
@@ -91,6 +102,8 @@ Note: `check_ctx` is threaded (contains mutable MetaState, usage counters, level
 - `App(Lit(42), Lit(1))` → `{:error, {:not_a_function, VBuiltin(:Int), span}}`
 - `Fst(Lit(42))` → `{:error, {:not_a_pair, VBuiltin(:Int), span}}`
 - `Lam(:omega, Var(0))` against `Int` → type mismatch (expected Int, got Pi)
+
+- **Implicit insertion**: `f(42)` where `f : {a : Type} -> a -> a` → inserts meta for `a`, resolves to `Int`
 
 **Multiplicity:**
 - `:zero` binding used computationally → `{:error, {:multiplicity_violation, name, span}}`

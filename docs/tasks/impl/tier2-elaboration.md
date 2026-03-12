@@ -54,6 +54,13 @@ For `variable {a : Type}` followed by `def f(x : a) : a do x end`:
 2. Prepend implicit parameters for each match
 3. Result: `def f({a : Type}, x : a) : a do x end`
 
+### Implicit argument insertion (deferred to tier2-checker)
+
+Implicit argument insertion requires type information to determine where implicit
+parameters exist. The elaborator registers auto-implicits and resolves free type
+variables, but actual meta insertion for implicit arguments happens during
+bidirectional type checking. See tier2-checker.md.
+
 ### Holes (d17)
 
 `_` → `Meta(fresh_id)` tagged as `:hole` in MetaState. Record span + context snapshot for reporting.
