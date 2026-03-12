@@ -21,7 +21,7 @@ defmodule Haruspex.TokenizerTest do
   describe "keywords" do
     test "all keywords tokenize correctly" do
       keywords =
-        ~w[def do end type case fn let if else import mutual variable class instance record with where]
+        ~w[def do end type case fn let if else import mutual class instance record with where]
 
       for kw <- keywords do
         assert tags(kw) == [String.to_atom(kw)]

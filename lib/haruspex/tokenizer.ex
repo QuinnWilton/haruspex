@@ -22,7 +22,6 @@ defmodule Haruspex.Tokenizer do
           | :else
           | :import
           | :mutual
-          | :variable
           | :class
           | :instance
           | :record
@@ -54,6 +53,7 @@ defmodule Haruspex.Tokenizer do
           | :or_or
           | :not
           | :pipe
+          | :bar
           | :arrow
           | :fat_arrow
           | :colon
@@ -77,7 +77,7 @@ defmodule Haruspex.Tokenizer do
   @type error :: {:error, String.t(), non_neg_integer()}
 
   @keywords MapSet.new(~w[
-    def do end type case fn let if else import mutual variable
+    def do end type case fn let if else import mutual
     class instance record with where
   ]a)
 
@@ -162,6 +162,11 @@ defmodule Haruspex.Tokenizer do
 
   defp do_tokenize(<<"||", rest::binary>>, pos, acc, depth) do
     emit(rest, pos, 2, :or_or, nil, acc, depth)
+  end
+
+  # Bare | (after |> and || are matched above).
+  defp do_tokenize(<<"|", rest::binary>>, pos, acc, depth) do
+    emit(rest, pos, 1, :bar, nil, acc, depth)
   end
 
   # Single-character operators and delimiters.
