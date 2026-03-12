@@ -173,9 +173,64 @@ Errors are rendered using pentiment spans for source context (underlined spans, 
 
 ## Implementation notes
 
-- Multiplicity checking: maintain a usage counter per binding. Erased bindings (mult = :zero) must have zero computational uses. At the end of checking a lambda body, verify usage.
-- Universe checking: `check_is_type(ctx, term)` synthesizes the term's type and verifies it's `VType(l)` for some level `l`, returning the level.
-- Zonking: final pass that substitutes all solved metas in the output term, producing a fully explicit core term.
+### Computational vs non-computational positions
+
+A position is **computational** if it contributes to the runtime value. This distinction determines where erased (`:zero` multiplicity) bindings may appear.
+
+**Computational positions** (`:zero` bindings may NOT be used here):
+- Function bodies
+- Let definitions (the bound expression)
+- Case scrutinees
+- Case branch bodies
+- Pair components
+- Application arguments when the parameter has `:omega` multiplicity
+
+**Non-computational positions** (`:zero` bindings may be used here):
+- Type annotations
+- Pi/Sigma domain and codomain (these are types)
+- Arguments to `:zero` multiplicity parameters (erased positions)
+
+### Usage tracking through scopes
+
+- Each binding in the context has a usage counter, initialized to 0.
+- `synth(Var(ix))` increments the usage counter for the binding at index `ix`.
+- At lambda/let scope exit, check the innermost binding's usage against its multiplicity:
+  - `:zero` — usage must be exactly 0
+  - `:omega` — any usage count is permitted (including 0)
+- Usage in nested scopes counts toward the enclosing binding. For example, if a lambda uses a variable from an outer scope, that outer variable's usage counter is incremented.
+
+### Universe constraint generation
+
+`check_is_type(ctx, term)` synthesizes the term's type and verifies it is `VType(l)` for some level `l`, returning the level. When `l` is a level variable, the checker records level constraints:
+- Pi types: `{:eq, result_level, {:lmax, dom_level, cod_level}}` — the universe of a Pi type is the max of its domain and codomain universes.
+- Sigma types: analogous to Pi.
+- When checking `Type(l)` synthesizes `VType(LSucc(l))`, the successor relationship is structural (not a constraint).
+- If `check_is_type` encounters a type that does not synthesize to `VType(_)`, it produces `{:error, {:universe_error, msg, span}}`.
+
+### Implicit vs hole metas
+
+Both implicit metas and hole metas are entries in MetaState, distinguished by their `kind` field:
+- **Implicit metas** (`kind: :implicit`): created by `InsertedMeta` expansion during elaboration. At post-definition processing, unsolved implicit metas produce `{:error, {:unsolved_meta, id, type, span}}` — "could not infer implicit argument of type `T`".
+- **Hole metas** (`kind: :hole`): created by `_` in source. At post-definition processing, unsolved hole metas produce informational hole reports (not errors), showing the expected type and available bindings at the hole's location.
+
+### Zonking
+
+Final pass that walks the elaborated core term, substituting solved metas with their solutions:
+
+```
+zonk(meta_state, term):
+  case term:
+    Meta(id) ->
+      case lookup(meta_state, id):
+        {:solved, val} -> zonk(meta_state, quote(level, val))
+        {:unsolved, _, _, :implicit} -> error: "could not infer"
+        {:unsolved, _, _, :hole} -> term  # leave as-is (or replace with placeholder for codegen)
+    App(f, a) -> App(zonk(meta_state, f), zonk(meta_state, a))
+    Lam(m, body) -> Lam(m, zonk(meta_state, body))
+    Pi(m, dom, cod) -> Pi(m, zonk(meta_state, dom), zonk(meta_state, cod))
+    # ... recurse into all sub-terms
+    _ -> term  # Var, Lit, Builtin, Type are already zonked
+```
 
 ## Testing strategy
 

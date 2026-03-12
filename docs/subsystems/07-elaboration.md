@@ -46,11 +46,14 @@ Transforms surface AST into core terms. This is the sole bridge between human-re
 ## Algorithm
 
 ### Name resolution
-- Maintain a stack of `{name, de_bruijn_index}` pairs
+- Maintain a stack of `{name, de_bruijn_level}` pairs
 - When entering a binder (lambda, let, pi), push `{name, current_level}` and increment level
 - Also append the name to `name_list` (indexed by de Bruijn level) — this list is passed to the checker for error message name recovery
 - Variable lookup: scan stack from top, return index = `current_level - bound_level - 1`
 - Unbound variable → error with span
+
+### Name shadowing
+When a name is pushed that already exists in the name stack, both entries coexist. Lookup scans from the top and returns the most recent (innermost) binding. The `name_list` appends the name regardless of shadowing, since it is indexed by de Bruijn level, not by name. This means `name_list` may contain duplicate names at different levels — the pretty-printer handles this by appending primes (`x'`, `x''`).
 
 ### Implicit argument insertion
 When elaborating `f(x)` where `f : {a : Type} -> a -> a`:
@@ -59,6 +62,14 @@ When elaborating `f(x)` where `f : {a : Type} -> a -> a`:
 3. For each implicit param, insert `InsertedMeta(fresh_id, mask)`
 4. Apply the function to the inserted metas, then to the explicit argument `x`
 5. Result: `App(App(f, InsertedMeta(?a, mask)), x)`
+
+### Binding mask construction
+
+When creating `InsertedMeta(id, mask)`, the mask determines which context variables the meta may depend on:
+- `mask` is `[boolean()]` of length `ctx.level`
+- `mask[i] = true` if level `i` is a lambda-bound variable (not let-bound) accessible at the insertion point
+- `mask[i] = false` for let-bound variables (their values are already determined)
+- The mask is used during meta solving to ensure solutions only reference variables that are in scope at the meta's insertion site
 
 ### Hole creation
 - `_` in source → `Meta(fresh_id)` in core
@@ -83,6 +94,30 @@ A `def` with a type annotation is treated as a mutual block of size 1:
 A type annotation is required for recursive functions. Non-recursive functions without annotations can have their types inferred via bidirectional checking. There is no fixpoint combinator — recursion is top-level only.
 
 See [[../decisions/d25-mutual-blocks]] for the general mutual block mechanism.
+
+### Mutual block elaboration
+
+For `mutual do def f ...; def g ... end`:
+1. **Phase 1 — signatures**: elaborate all type signatures in order, producing core type terms
+2. **Phase 2 — context extension**: evaluate all type terms to values, push all `{name, type_value}` pairs into the context simultaneously
+3. **Phase 3 — bodies**: elaborate all bodies with the extended context — each body can reference all names in the mutual block
+
+Each body is elaborated as if the full mutual group is in scope. The checker then type-checks each body against its declared type.
+
+### Recursion detection
+
+There is no explicit recursion detection. Every `def` with a type annotation is treated as potentially recursive — its name is added to context before body elaboration (per d25). This means a single `def` is handled as a mutual block of size 1. Non-recursive defs that omit the type annotation use pure bidirectional inference without self-reference.
+
+### Auto-implicit resolution (d24)
+
+When a `variable {a : Type}` declaration is in scope and the elaborator encounters `def f(x : a) : a do x end`:
+1. Scan the function signature for free type variables
+2. Match each free type variable against declared auto-implicit names
+3. For each match, prepend an implicit parameter to the function's parameter list
+4. Auto-implicits are inserted in declaration order, before explicit parameters
+5. Result: `def f({a : Type}, x : a) : a do x end`
+
+This is a surface-level transformation performed before the signature is elaborated to core terms.
 
 ## Implementation notes
 
