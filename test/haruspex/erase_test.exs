@@ -441,6 +441,245 @@ defmodule Haruspex.EraseTest do
   defp has_meta?(_), do: false
 
   # ============================================================================
+  # Synth mode: literal types
+  # ============================================================================
+
+  describe "synth mode literals" do
+    test "float literal synthesizes Float type via let" do
+      # let x = 1.0 in x — synth on 1.0 gives Float
+      term = {:let, {:lit, 1.0}, {:var, 0}}
+      type = {:builtin, :Float}
+      result = Erase.erase(term, type)
+      assert {:let, {:lit, 1.0}, {:var, 0}} = result
+    end
+
+    test "string literal synthesizes String type via let" do
+      term = {:let, {:lit, "hello"}, {:var, 0}}
+      type = {:builtin, :String}
+      result = Erase.erase(term, type)
+      assert {:let, {:lit, "hello"}, {:var, 0}} = result
+    end
+
+    test "boolean true synthesizes Atom type via let" do
+      term = {:let, {:lit, true}, {:var, 0}}
+      type = {:builtin, :Atom}
+      result = Erase.erase(term, type)
+      assert {:let, {:lit, true}, {:var, 0}} = result
+    end
+
+    test "boolean false synthesizes Atom type via let" do
+      term = {:let, {:lit, false}, {:var, 0}}
+      type = {:builtin, :Atom}
+      result = Erase.erase(term, type)
+      assert {:let, {:lit, false}, {:var, 0}} = result
+    end
+
+    test "atom literal synthesizes Atom type via let" do
+      term = {:let, {:lit, :foo}, {:var, 0}}
+      type = {:builtin, :Atom}
+      result = Erase.erase(term, type)
+      assert {:let, {:lit, :foo}, {:var, 0}} = result
+    end
+  end
+
+  # ============================================================================
+  # Synth mode: let, pair, projections, spans, type-level
+  # ============================================================================
+
+  describe "synth mode compound terms" do
+    test "let in synth mode preserves runtime binding" do
+      # App(let x = 42 in add(x), 10) — app forces synth on inner let
+      let_term = {:let, {:lit, 42}, {:app, {:builtin, :add}, {:var, 0}}}
+      term = {:app, let_term, {:lit, 10}}
+      type = {:builtin, :Int}
+      result = Erase.erase(term, type)
+      assert {:app, {:let, {:lit, 42}, {:app, {:builtin, :add}, {:var, 0}}}, {:lit, 10}} = result
+    end
+
+    test "let in synth mode eliminates type-level binding" do
+      # App(let T = Int in add, 10) where T has type Type
+      # The let body (add) has type Int -> Int -> Int.
+      # When T : Type, synth should eliminate the let.
+      let_term = {:let, {:type, {:llit, 0}}, {:app, {:builtin, :add}, {:lit, 5}}}
+      term = {:app, let_term, {:lit, 10}}
+      type = {:builtin, :Int}
+      result = Erase.erase(term, type)
+      assert {:app, {:app, {:builtin, :add}, {:lit, 5}}, {:lit, 10}} = result
+    end
+
+    test "pair in synth mode erases both components" do
+      # fst({1, 2}) — fst forces synth on the pair
+      term = {:fst, {:pair, {:lit, 1}, {:lit, 2}}}
+      type = {:builtin, :Int}
+      result = Erase.erase(term, type)
+      assert {:fst, {:pair, {:lit, 1}, {:lit, 2}}} = result
+    end
+
+    test "snd projection via synth" do
+      pair_type = {:sigma, {:builtin, :Int}, {:builtin, :Int}}
+      term = {:snd, {:var, 0}}
+      type = {:builtin, :Int}
+      result = erase_with_ctx(term, type, [pair_type])
+      assert {:snd, {:var, 0}} = result
+    end
+
+    test "spanned term in synth mode is stripped" do
+      span = Pentiment.Span.byte(0, 5)
+      # App(spanned(add), 10) — app synths the spanned builtin
+      term = {:app, {:spanned, span, {:app, {:builtin, :add}, {:lit, 1}}}, {:lit, 2}}
+      type = {:builtin, :Int}
+      result = Erase.erase(term, type)
+      assert {:app, {:app, {:builtin, :add}, {:lit, 1}}, {:lit, 2}} = result
+    end
+
+    test "pi in synth mode erases to :erased" do
+      # App forces synth on Pi, which should return {:erased, {:type, ...}}
+      # We can test directly through a let whose def is a Pi
+      term = {:let, {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}, {:lit, 42}}
+      type = {:builtin, :Int}
+      result = Erase.erase(term, type)
+      # Pi has type Type, so it's type-level → let is eliminated
+      assert result == {:lit, 42}
+    end
+
+    test "sigma in synth mode erases" do
+      term = {:let, {:sigma, {:builtin, :Int}, {:builtin, :Int}}, {:lit, 42}}
+      type = {:builtin, :Int}
+      result = Erase.erase(term, type)
+      assert result == {:lit, 42}
+    end
+
+    test "type in synth mode erases" do
+      term = {:let, {:type, {:llit, 0}}, {:lit, 42}}
+      type = {:builtin, :Int}
+      result = Erase.erase(term, type)
+      assert result == {:lit, 42}
+    end
+
+    test "meta in synth mode raises CompilerBug" do
+      # Force synth on meta via app
+      term = {:app, {:meta, 5}, {:lit, 42}}
+      type = {:builtin, :Int}
+
+      assert_raise Haruspex.CompilerBug, ~r/unsolved meta 5/, fn ->
+        Erase.erase(term, type)
+      end
+    end
+
+    test "inserted_meta in synth mode raises CompilerBug" do
+      term = {:app, {:inserted_meta, 7, [true]}, {:lit, 42}}
+      type = {:builtin, :Int}
+
+      assert_raise Haruspex.CompilerBug, ~r/unsolved inserted meta 7/, fn ->
+        Erase.erase(term, type)
+      end
+    end
+
+    test "fst in synth mode extracts sigma first type" do
+      # App(fst(pair_var), 10) — app forces synth on fst
+      pair_type = {:sigma, {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}, {:builtin, :Int}}
+      # fst(pair_var) has type (Int -> Int), so App(fst(pair_var), 10) applies it
+      term = {:app, {:fst, {:var, 0}}, {:lit, 10}}
+      type = {:builtin, :Int}
+      result = erase_with_ctx(term, type, [pair_type])
+      assert {:app, {:fst, {:var, 0}}, {:lit, 10}} = result
+    end
+
+    test "snd in synth mode extracts sigma second type" do
+      # let x = snd(pair_var) in x — let synth on snd
+      pair_type = {:sigma, {:builtin, :Int}, {:builtin, :Int}}
+      term = {:let, {:snd, {:var, 0}}, {:var, 0}}
+      type = {:builtin, :Int}
+      result = erase_with_ctx(term, type, [pair_type])
+      assert {:let, {:snd, {:var, 0}}, {:var, 0}} = result
+    end
+
+    test "extern in synth mode raises CompilerBug" do
+      # Force synth via app on extern
+      term = {:app, {:extern, :math, :sqrt, 1}, {:lit, 4.0}}
+      type = {:builtin, :Float}
+
+      assert_raise Haruspex.CompilerBug, ~r/cannot synthesize type of extern/, fn ->
+        Erase.erase(term, type)
+      end
+    end
+  end
+
+  # ============================================================================
+  # Builtin type coverage
+  # ============================================================================
+
+  describe "builtin type variants" do
+    test "float arithmetic builtins erase correctly" do
+      for op <- [:fadd, :fsub, :fmul, :fdiv] do
+        term = {:app, {:app, {:builtin, op}, {:lit, 1.0}}, {:lit, 2.0}}
+        type = {:builtin, :Float}
+        result = Erase.erase(term, type)
+        assert {:app, {:app, {:builtin, ^op}, {:lit, 1.0}}, {:lit, 2.0}} = result
+      end
+    end
+
+    test "comparison builtins erase correctly" do
+      for op <- [:eq, :neq, :lt, :gt, :lte, :gte] do
+        term = {:app, {:app, {:builtin, op}, {:lit, 1}}, {:lit, 2}}
+        type = {:builtin, :Atom}
+        result = Erase.erase(term, type)
+        assert {:app, {:app, {:builtin, ^op}, {:lit, 1}}, {:lit, 2}} = result
+      end
+    end
+
+    test "boolean builtins erase correctly" do
+      for op <- [:and, :or] do
+        term = {:app, {:app, {:builtin, op}, {:lit, true}}, {:lit, false}}
+        type = {:builtin, :Atom}
+        result = Erase.erase(term, type)
+        assert {:app, {:app, {:builtin, ^op}, {:lit, true}}, {:lit, false}} = result
+      end
+    end
+
+    test "unary builtins erase correctly" do
+      term = {:app, {:builtin, :neg}, {:lit, 5}}
+      type = {:builtin, :Int}
+      result = Erase.erase(term, type)
+      assert {:app, {:builtin, :neg}, {:lit, 5}} = result
+
+      term = {:app, {:builtin, :not}, {:lit, true}}
+      type = {:builtin, :Atom}
+      result = Erase.erase(term, type)
+      assert {:app, {:builtin, :not}, {:lit, true}} = result
+    end
+
+    test "type builtins (Int, Float, String, Bool, Atom) erase to :erased in check mode" do
+      for builtin <- [:Int, :Float, :String, :Bool, :Atom] do
+        term = {:builtin, builtin}
+        type = {:type, {:llit, 0}}
+        result = Erase.erase(term, type)
+        assert result == {:builtin, builtin}
+      end
+    end
+
+    test "type builtins in synth mode are type-level, eliminating let" do
+      # let T = Float in 42 — synth on {:builtin, :Float} gives {:type, ...}
+      # Since type-level, the let is eliminated.
+      for builtin <- [:Float, :String, :Bool, :Atom] do
+        term = {:let, {:builtin, builtin}, {:lit, 42}}
+        type = {:builtin, :Int}
+        result = Erase.erase(term, type)
+        assert result == {:lit, 42}
+      end
+    end
+
+    test "unknown builtin type falls back to type" do
+      # Let with unknown builtin: synth will use fallback type {:type, {:llit, 0}}
+      term = {:let, {:builtin, :unknown_op}, {:lit, 42}}
+      type = {:builtin, :Int}
+      result = Erase.erase(term, type)
+      # unknown_op has type {:type, {:llit, 0}} → type-level → let eliminated
+      assert result == {:lit, 42}
+    end
+  end
+
+  # ============================================================================
   # Helpers
   # ============================================================================
 

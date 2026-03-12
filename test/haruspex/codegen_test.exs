@@ -365,4 +365,176 @@ defmodule Haruspex.CodegenTest do
       assert fun.(42).("ignored") == 42
     end
   end
+
+  # ============================================================================
+  # Additional builtin coverage
+  # ============================================================================
+
+  describe "additional builtins" do
+    test "fully-applied neq" do
+      assert Codegen.eval_expr({:app, {:app, {:builtin, :neq}, {:lit, 1}}, {:lit, 2}}) == true
+      assert Codegen.eval_expr({:app, {:app, {:builtin, :neq}, {:lit, 1}}, {:lit, 1}}) == false
+    end
+
+    test "fully-applied lte" do
+      assert Codegen.eval_expr({:app, {:app, {:builtin, :lte}, {:lit, 1}}, {:lit, 2}}) == true
+      assert Codegen.eval_expr({:app, {:app, {:builtin, :lte}, {:lit, 2}}, {:lit, 2}}) == true
+      assert Codegen.eval_expr({:app, {:app, {:builtin, :lte}, {:lit, 3}}, {:lit, 2}}) == false
+    end
+
+    test "fully-applied gte" do
+      assert Codegen.eval_expr({:app, {:app, {:builtin, :gte}, {:lit, 2}}, {:lit, 1}}) == true
+      assert Codegen.eval_expr({:app, {:app, {:builtin, :gte}, {:lit, 2}}, {:lit, 2}}) == true
+      assert Codegen.eval_expr({:app, {:app, {:builtin, :gte}, {:lit, 1}}, {:lit, 2}}) == false
+    end
+
+    test "partially-applied neq" do
+      fun = Codegen.eval_expr({:app, {:builtin, :neq}, {:lit, 1}})
+      assert is_function(fun, 1)
+      assert fun.(2) == true
+      assert fun.(1) == false
+    end
+
+    test "partially-applied lte" do
+      fun = Codegen.eval_expr({:app, {:builtin, :lte}, {:lit, 3}})
+      assert is_function(fun, 1)
+      assert fun.(5) == true
+    end
+
+    test "partially-applied gte" do
+      fun = Codegen.eval_expr({:app, {:builtin, :gte}, {:lit, 3}})
+      assert is_function(fun, 1)
+      assert fun.(1) == true
+    end
+
+    test "partially-applied lt" do
+      fun = Codegen.eval_expr({:app, {:builtin, :lt}, {:lit, 1}})
+      assert fun.(2) == true
+    end
+
+    test "partially-applied gt" do
+      fun = Codegen.eval_expr({:app, {:builtin, :gt}, {:lit, 5}})
+      assert fun.(1) == true
+    end
+
+    test "partially-applied eq" do
+      fun = Codegen.eval_expr({:app, {:builtin, :eq}, {:lit, 1}})
+      assert fun.(1) == true
+      assert fun.(2) == false
+    end
+
+    test "partially-applied and" do
+      fun = Codegen.eval_expr({:app, {:builtin, :and}, {:lit, true}})
+      assert fun.(false) == false
+    end
+
+    test "partially-applied or" do
+      fun = Codegen.eval_expr({:app, {:builtin, :or}, {:lit, false}})
+      assert fun.(true) == true
+    end
+
+    test "partially-applied sub" do
+      fun = Codegen.eval_expr({:app, {:builtin, :sub}, {:lit, 10}})
+      assert fun.(3) == 7
+    end
+
+    test "partially-applied mul" do
+      fun = Codegen.eval_expr({:app, {:builtin, :mul}, {:lit, 6}})
+      assert fun.(7) == 42
+    end
+
+    test "partially-applied div" do
+      fun = Codegen.eval_expr({:app, {:builtin, :div}, {:lit, 10}})
+      assert fun.(3) == 3
+    end
+
+    test "unapplied sub" do
+      fun = Codegen.eval_expr({:builtin, :sub})
+      assert fun.(10, 3) == 7
+    end
+
+    test "unapplied mul" do
+      fun = Codegen.eval_expr({:builtin, :mul})
+      assert fun.(6, 7) == 42
+    end
+
+    test "unapplied div" do
+      fun = Codegen.eval_expr({:builtin, :div})
+      assert fun.(10, 3) == 3
+    end
+
+    test "unapplied eq" do
+      fun = Codegen.eval_expr({:builtin, :eq})
+      assert fun.(1, 1) == true
+    end
+
+    test "unapplied neq" do
+      fun = Codegen.eval_expr({:builtin, :neq})
+      assert fun.(1, 2) == true
+    end
+
+    test "unapplied lt" do
+      fun = Codegen.eval_expr({:builtin, :lt})
+      assert fun.(1, 2) == true
+    end
+
+    test "unapplied gt" do
+      fun = Codegen.eval_expr({:builtin, :gt})
+      assert fun.(2, 1) == true
+    end
+
+    test "unapplied lte" do
+      fun = Codegen.eval_expr({:builtin, :lte})
+      assert fun.(1, 2) == true
+    end
+
+    test "unapplied gte" do
+      fun = Codegen.eval_expr({:builtin, :gte})
+      assert fun.(2, 1) == true
+    end
+
+    test "unapplied neg" do
+      fun = Codegen.eval_expr({:builtin, :neg})
+      assert fun.(5) == -5
+    end
+
+    test "unapplied not" do
+      fun = Codegen.eval_expr({:builtin, :not})
+      assert fun.(true) == false
+    end
+
+    test "unapplied and" do
+      fun = Codegen.eval_expr({:builtin, :and})
+      assert fun.(true, false) == false
+    end
+
+    test "unapplied or" do
+      fun = Codegen.eval_expr({:builtin, :or})
+      assert fun.(false, true) == true
+    end
+  end
+
+  # ============================================================================
+  # Variable name collision
+  # ============================================================================
+
+  describe "name generation" do
+    test "deeply nested lambdas generate unique names" do
+      # 5 nested lambdas returning innermost var
+      term =
+        {:lam, :omega, {:lam, :omega, {:lam, :omega, {:lam, :omega, {:lam, :omega, {:var, 0}}}}}}
+
+      fun = Codegen.eval_expr(term)
+      assert fun.(1).(2).(3).(4).(5) == 5
+    end
+
+    test "let binding generates unique name" do
+      # let x = 1 in let y = 2 in x + y
+      term =
+        {:let, {:lit, 1},
+         {:let, {:lit, 2}, {:app, {:app, {:builtin, :add}, {:var, 1}}, {:var, 0}}}}
+
+      assert Codegen.eval_expr(term) == 3
+    end
+  end
 end
