@@ -2,10 +2,12 @@
 
 # Tier 2: Bidirectional Type Checking
 
+## Section
+
 ```elixir
 Mix.install([
-  {:haruspex, path: "../.."},
-  {:pentiment, path: "../../../pentiment"}
+  {:haruspex, path: "/Users/quinn/dev/beam_box/haruspex"},
+  {:pentiment, path: "/Users/quinn/dev/beam_box/pentiment"}
 ])
 ```
 
@@ -48,14 +50,6 @@ IO.puts("x → #{inspect(x_core)}  (index 1, y is closer)")
 IO.puts("y → #{inspect(y_core)}  (index 0, most recent)")
 ```
 
-<!-- livebook:{"output":true} -->
-
-```
-Int → {:builtin, :Int}
-x → {:var, 1}  (index 1, y is closer)
-y → {:var, 0}  (index 0, most recent)
-```
-
 ### Operator desugaring and definition elaboration
 
 ```elixir
@@ -77,16 +71,6 @@ body = {:binop, s, :add, {:var, s, :x}, {:var, s, :y}}
 IO.puts("\ndef add(x : Int, y : Int) : Int do x + y end")
 IO.puts("  type: #{inspect(type_core)}")
 IO.puts("  body: #{inspect(body_core)}")
-```
-
-<!-- livebook:{"output":true} -->
-
-```
-1 + 2: {:app, {:app, {:builtin, :add}, {:lit, 1}}, {:lit, 2}}
-
-def add(x : Int, y : Int) : Int do x + y end
-  type: {:pi, :omega, {:builtin, :Int}, {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}}
-  body: {:lam, :omega, {:lam, :omega, {:app, {:app, {:builtin, :add}, {:var, 1}}, {:var, 0}}}}
 ```
 
 ## Unification
@@ -118,16 +102,6 @@ ms2 = MetaState.new()
 IO.puts("Level constraint: #{inspect(ms2.level_constraints)}")
 {:ok, solved} = LevelSolver.solve(ms2.level_constraints)
 IO.puts("Solved levels: #{inspect(solved)}")
-```
-
-<!-- livebook:{"output":true} -->
-
-```
-Int = Int ✓
-Int ≠ Float ✗
-?0 solved to: Int
-Level constraint: [{:eq, {:lvar, 0}, {:llit, 0}}]
-Solved levels: %{0 => 0}
 ```
 
 ## Bidirectional Type Checking
@@ -164,19 +138,6 @@ pi0 = {:vpi, :zero, {:vbuiltin, :Int}, [], {:builtin, :Int}}
 IO.puts("check (λ0 x.x) : {Int} → Int  ✗  (erased var used)")
 ```
 
-<!-- livebook:{"output":true} -->
-
-```
-synth 42       : Int
-synth Int      : Type
-synth add      : Int -> Int -> Int
-synth Type 0   : Type (succ 0)
-
-check (λx.x) : Int → Int  ✓  {:lam, :omega, {:var, 0}}
-check 42 : Float  ✗  expected Float, got Int
-check (λ0 x.x) : {Int} → Int  ✗  (erased var used)
-```
-
 ## End-to-End: Elaborate → Check → Error
 
 The full pipeline: elaborate a surface definition, type-check it, render errors with pentiment.
@@ -210,17 +171,6 @@ check_ctx2 = Check.from_meta_state(elab_ctx2.meta_state)
 opts = %{names: [:bad, :x], level: 2, span: s, source: "example.hx"}
 report = Errors.render(err, opts)
 IO.puts("  " <> Errors.format_compact(report))
-```
-
-<!-- livebook:{"output":true} -->
-
-```
-═══ def add(x : Int, y : Int) : Int do x + y end ═══
-  ✓ type checks!
-  zonked: {:lam, :omega, {:lam, :omega, {:app, {:app, {:builtin, :add}, {:var, 1}}, {:var, 0}}}}
-
-═══ def bad(x : Int) : Float do x end ═══
-  [E001] type mismatch (example.hx:byte 0)
 ```
 
 ## Architecture
