@@ -70,6 +70,23 @@ defmodule Haruspex.QueriesTest do
       assert {:lam, :omega, {:lam, :omega, _}} = body_core
     end
 
+    test "writes type and body back to entity", %{db: db} do
+      set_source(db, "def id(x : Int) : Int do x end\n")
+
+      {:ok, [entity_id]} = Roux.Runtime.query(db, :haruspex_parse, @uri)
+
+      # Before elaborate, type and body are nil.
+      assert Roux.Runtime.field(db, Definition, entity_id, :type) == nil
+      assert Roux.Runtime.field(db, Definition, entity_id, :body) == nil
+
+      {:ok, {type_core, body_core}} =
+        Roux.Runtime.query(db, :haruspex_elaborate, {@uri, :id})
+
+      # After elaborate, entity fields are populated.
+      assert Roux.Runtime.field(db, Definition, entity_id, :type) == type_core
+      assert Roux.Runtime.field(db, Definition, entity_id, :body) == body_core
+    end
+
     test "propagates parse error", %{db: db} do
       set_source(db, "def 123bad\n")
 
@@ -214,6 +231,83 @@ defmodule Haruspex.QueriesTest do
 
     test "completions returns empty list", %{db: db} do
       assert [] == Roux.Runtime.query(db, :haruspex_completions, {@uri, {1, 1}})
+    end
+  end
+
+  # ============================================================================
+  # Entity tests
+  # ============================================================================
+
+  describe "entity" do
+    test "definition entity has correct identity", %{db: db} do
+      set_source(db, "def f(x : Int) : Int do x end\n")
+      {:ok, [entity_id]} = Roux.Runtime.query(db, :haruspex_parse, @uri)
+
+      assert Roux.Runtime.field(db, Definition, entity_id, :uri) == @uri
+      assert Roux.Runtime.field(db, Definition, entity_id, :name) == :f
+    end
+
+    test "erased_params initialized to nil", %{db: db} do
+      set_source(db, "def f(x : Int) : Int do x end\n")
+      {:ok, [entity_id]} = Roux.Runtime.query(db, :haruspex_parse, @uri)
+
+      assert Roux.Runtime.field(db, Definition, entity_id, :erased_params) == nil
+    end
+  end
+
+  # ============================================================================
+  # Incremental tests
+  # ============================================================================
+
+  describe "incremental behavior" do
+    test "modifying source body produces correct results", %{db: db} do
+      set_source(db, "def f(x : Int) : Int do x + 1 end\n")
+      {:ok, module1} = Roux.Runtime.query(db, :haruspex_compile, @uri)
+      assert module1.f(10) == 11
+
+      # Change body: x + 1 → x + 2.
+      set_source(db, "def f(x : Int) : Int do x + 2 end\n")
+      {:ok, module2} = Roux.Runtime.query(db, :haruspex_compile, @uri)
+      assert module2.f(10) == 12
+    after
+      purge_test_module()
+    end
+
+    test "adding a definition produces updated parse results", %{db: db} do
+      set_source(db, "def f(x : Int) : Int do x end\n")
+      {:ok, ids1} = Roux.Runtime.query(db, :haruspex_parse, @uri)
+      assert length(ids1) == 1
+
+      set_source(db, "def f(x : Int) : Int do x end\ndef g(x : Int) : Int do x + 1 end\n")
+      {:ok, ids2} = Roux.Runtime.query(db, :haruspex_parse, @uri)
+      assert length(ids2) == 2
+
+      names = Enum.map(ids2, &Roux.Runtime.field(db, Definition, &1, :name))
+      assert :f in names
+      assert :g in names
+    end
+
+    test "removing a definition produces updated parse results", %{db: db} do
+      set_source(db, "def f(x : Int) : Int do x end\ndef g(x : Int) : Int do x + 1 end\n")
+      {:ok, ids1} = Roux.Runtime.query(db, :haruspex_parse, @uri)
+      assert length(ids1) == 2
+
+      set_source(db, "def f(x : Int) : Int do x end\n")
+      {:ok, ids2} = Roux.Runtime.query(db, :haruspex_parse, @uri)
+      assert length(ids2) == 1
+
+      assert Roux.Runtime.field(db, Definition, hd(ids2), :name) == :f
+    end
+
+    test "modifying type produces different elaborate results", %{db: db} do
+      set_source(db, "def f(x : Int) : Int do x end\n")
+      {:ok, {type1, _}} = Roux.Runtime.query(db, :haruspex_elaborate, {@uri, :f})
+      assert {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}} = type1
+
+      # Change param type from Int to Float (body will fail check but elaborate succeeds).
+      set_source(db, "def f(x : Float) : Float do x end\n")
+      {:ok, {type2, _}} = Roux.Runtime.query(db, :haruspex_elaborate, {@uri, :f})
+      assert {:pi, :omega, {:builtin, :Float}, {:builtin, :Float}} = type2
     end
   end
 

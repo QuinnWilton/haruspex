@@ -78,6 +78,7 @@ defmodule Haruspex do
                   body: nil,
                   total?: Map.get(attrs, :total, false),
                   extern: Map.get(attrs, :extern),
+                  erased_params: nil,
                   span: span,
                   name_span: name_span
                 })
@@ -110,6 +111,8 @@ defmodule Haruspex do
 
     case Haruspex.Elaborate.elaborate_def(ctx, def_ast) do
       {:ok, {^name, type_core, body_core}, _ctx} ->
+        # Write elaborated type and body back to entity for field-level cutoff.
+        update_entity(db, entity_id, %{type: type_core, body: body_core})
         {:ok, {type_core, body_core}}
 
       {:error, _} = err ->
@@ -219,6 +222,14 @@ defmodule Haruspex do
     Enum.find(entity_ids, fn entity_id ->
       Roux.Runtime.field(db, Definition, entity_id, :name) == name
     end) || raise Haruspex.CompilerBug, "definition #{name} not found in parsed entities"
+  end
+
+  # Update specific tracked fields on an existing Definition entity.
+  # Reads all current fields and merges the updates, then calls create
+  # to trigger field-level change tracking.
+  defp update_entity(db, entity_id, updates) do
+    current = Roux.Runtime.read(db, Definition, entity_id)
+    Roux.Runtime.create(db, Definition, Map.merge(current, updates))
   end
 
   defp module_name_from_uri(uri) do
