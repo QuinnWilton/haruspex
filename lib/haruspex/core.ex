@@ -43,6 +43,7 @@ defmodule Haruspex.Core do
           | {:data, atom(), [expr()]}
           | {:con, atom(), atom(), [expr()]}
           | {:case, expr(), [{atom(), non_neg_integer(), expr()}]}
+          | :erased
 
   # ============================================================================
   # Constructors
@@ -152,6 +153,8 @@ defmodule Haruspex.Core do
     {:spanned, span, subst(inner, target, replacement)}
   end
 
+  def subst(:erased, _target, _replacement), do: :erased
+
   def subst(term, _target, _replacement)
       when elem(term, 0) in [:type, :lit, :builtin, :extern, :meta, :inserted_meta] do
     term
@@ -209,6 +212,8 @@ defmodule Haruspex.Core do
   def shift({:spanned, span, inner}, amount, cutoff) do
     {:spanned, span, shift(inner, amount, cutoff)}
   end
+
+  def shift(:erased, _amount, _cutoff), do: :erased
 
   def shift(term, _amount, _cutoff)
       when elem(term, 0) in [:type, :lit, :builtin, :extern, :meta, :inserted_meta] do
