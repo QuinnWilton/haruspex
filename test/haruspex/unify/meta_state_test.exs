@@ -176,6 +176,67 @@ defmodule Haruspex.Unify.MetaStateTest do
   end
 
   # ============================================================================
+  # Force — depth limit
+  # ============================================================================
+
+  describe "force — depth limit" do
+    test "deep chain terminates at max depth" do
+      ms = MetaState.new()
+      type = {:vtype, {:llit, 0}}
+
+      # Build a chain of 101 metas, each solved to the next.
+      {ids, ms} =
+        Enum.reduce(0..100, {[], ms}, fn _, {ids, ms} ->
+          {id, ms} = MetaState.fresh_meta(ms, type, 0, :implicit)
+          {[id | ids], ms}
+        end)
+
+      ids = Enum.reverse(ids)
+
+      # Solve each meta to the next one.
+      ms =
+        ids
+        |> Enum.chunk_every(2, 1, :discard)
+        |> Enum.reduce(ms, fn [a, b], ms ->
+          {:ok, ms} = MetaState.solve(ms, a, {:vneutral, type, {:nmeta, b}})
+          ms
+        end)
+
+      # Solve the last to a literal.
+      {:ok, ms} = MetaState.solve(ms, List.last(ids), {:vlit, 42})
+
+      # Force from the first — should hit depth limit and return early.
+      first = {:vneutral, type, {:nmeta, hd(ids)}}
+      result = MetaState.force(ms, first)
+      # After 100 steps it stops; the result may not be the final {:vlit, 42}
+      # but it should not crash.
+      assert result != nil
+    end
+
+    test "force with unknown meta id returns value unchanged" do
+      ms = MetaState.new()
+      type = {:vtype, {:llit, 0}}
+      val = {:vneutral, type, {:nmeta, 999}}
+      assert MetaState.force(ms, val) == val
+    end
+  end
+
+  # ============================================================================
+  # Add constraint
+  # ============================================================================
+
+  describe "add_constraint — additional" do
+    test "constraints are prepended" do
+      ms = MetaState.new()
+      ms = MetaState.add_constraint(ms, {:eq, {:llit, 0}, {:llit, 1}})
+      ms = MetaState.add_constraint(ms, {:leq, {:llit, 2}, {:llit, 3}})
+
+      assert [{:leq, {:llit, 2}, {:llit, 3}}, {:eq, {:llit, 0}, {:llit, 1}}] =
+               ms.level_constraints
+    end
+  end
+
+  # ============================================================================
   # Property tests
   # ============================================================================
 

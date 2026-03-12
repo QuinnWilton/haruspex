@@ -389,6 +389,559 @@ defmodule Haruspex.PrettyTest do
   end
 
   # ============================================================================
+  # Ndef neutral
+  # ============================================================================
+
+  describe "ndef neutral" do
+    test "ndef with no args" do
+      ne = {:ndef, :foo, []}
+      assert Pretty.pretty({:vneutral, {:vtype, {:llit, 0}}, ne}) == ":foo"
+    end
+
+    test "ndef with args" do
+      ne = {:ndef, :foo, [{:vlit, 1}, {:vlit, 2}]}
+      assert Pretty.pretty({:vneutral, {:vtype, {:llit, 0}}, ne}) == ":foo(1)(2)"
+    end
+  end
+
+  # ============================================================================
+  # Builtin with applied args
+  # ============================================================================
+
+  describe "builtin with args" do
+    test "applied builtin" do
+      val = {:vbuiltin, {:add, [{:vlit, 1}]}}
+      assert Pretty.pretty(val) == "add(1)"
+    end
+
+    test "multi-applied builtin" do
+      val = {:vbuiltin, {:add, [{:vlit, 1}, {:vlit, 2}]}}
+      assert Pretty.pretty(val) == "add(1)(2)"
+    end
+  end
+
+  # ============================================================================
+  # Universe level variants
+  # ============================================================================
+
+  describe "universe level variants" do
+    test "lvar level" do
+      assert Pretty.pretty({:vtype, {:lvar, 5}}) == "Type ?l5"
+    end
+
+    test "lsucc level" do
+      assert Pretty.pretty({:vtype, {:lsucc, {:llit, 0}}}) == "Type (succ 0)"
+    end
+
+    test "lmax level" do
+      assert Pretty.pretty({:vtype, {:lmax, {:lvar, 0}, {:llit, 1}}}) == "Type (max ?l0 1)"
+    end
+
+    test "nested lsucc" do
+      assert Pretty.pretty({:vtype, {:lsucc, {:lsucc, {:llit, 0}}}}) == "Type (succ (succ 0))"
+    end
+
+    test "nested lmax" do
+      assert Pretty.pretty(
+               {:vtype, {:lmax, {:lsucc, {:llit, 0}}, {:lmax, {:llit, 1}, {:llit, 2}}}}
+             ) ==
+               "Type (max (succ 0) (max 1 2))"
+    end
+  end
+
+  # ============================================================================
+  # Core term pretty-printing — additional cases
+  # ============================================================================
+
+  describe "pretty_term/2 — additional" do
+    test "inserted_meta" do
+      assert Pretty.pretty_term({:inserted_meta, 7, [true, false]}, []) == "?7"
+    end
+
+    test "data" do
+      assert Pretty.pretty_term({:data, :Nat, []}, []) == "data Nat"
+    end
+
+    test "constructor with no args" do
+      assert Pretty.pretty_term({:con, :Nat, :Zero, []}, []) == "Zero"
+    end
+
+    test "constructor with args" do
+      assert Pretty.pretty_term({:con, :Nat, :Succ, [{:var, 0}]}, [:n]) == "Succ(n)"
+    end
+
+    test "case expression" do
+      term = {:case, {:var, 0}, [{:Zero, 0, {:lit, 0}}, {:Succ, 1, {:var, 0}}]}
+      assert Pretty.pretty_term(term, [:n]) == "case n { ... }"
+    end
+
+    test "implicit pi term (zero mult, non-dependent)" do
+      result = Pretty.pretty_term({:pi, :zero, {:builtin, :Int}, {:builtin, :Int}}, [])
+      assert result =~ ~r/\{.+ : Int\} -> Int/
+    end
+
+    test "implicit pi term (zero mult, dependent)" do
+      result = Pretty.pretty_term({:pi, :zero, {:type, {:llit, 0}}, {:var, 0}}, [])
+      assert result == "{x : Type} -> x"
+    end
+
+    test "variable not in names" do
+      # depth = 0, ix = 0 => level = 0-0-1 = -1, no names => "_v-1"
+      assert Pretty.pretty_term({:var, 0}, []) == "_v-1"
+    end
+
+    test "nested let" do
+      term = {:let, {:lit, 1}, {:let, {:lit, 2}, {:var, 1}}}
+      result = Pretty.pretty_term(term, [])
+      assert result == "let x = 1 in let y = 2 in x"
+    end
+
+    test "fst and snd of term" do
+      assert Pretty.pretty_term({:fst, {:var, 0}}, [:p]) == "p.1"
+      assert Pretty.pretty_term({:snd, {:var, 0}}, [:p]) == "p.2"
+    end
+  end
+
+  # ============================================================================
+  # Value pretty-printing — additional coverage
+  # ============================================================================
+
+  describe "value pretty-printing — coverage" do
+    test "variable with no name in disambig" do
+      val = {:vneutral, {:vtype, {:llit, 0}}, {:nvar, 99}}
+      assert Pretty.pretty(val) == "_v99"
+    end
+
+    test "extern value" do
+      assert Pretty.pretty({:vextern, Kernel, :+, 2}) == "Kernel.+/2"
+    end
+
+    test "dependent pi with implicit (zero) multiplicity" do
+      val = {:vpi, :zero, {:vtype, {:llit, 0}}, [], {:var, 0}}
+      assert Pretty.pretty(val) == "{x : Type} -> x"
+    end
+
+    test "non-dependent pi with implicit (zero) multiplicity" do
+      val = {:vpi, :zero, {:vbuiltin, :Int}, [], {:builtin, :Int}}
+      result = Pretty.pretty(val)
+      assert result =~ ~r/\{.+ : Int\} -> Int/
+    end
+
+    test "dependent sigma" do
+      val = {:vsigma, {:vtype, {:llit, 0}}, [], {:var, 0}}
+      assert Pretty.pretty(val) == "(x : Type, x)"
+    end
+
+    test "non-dependent sigma" do
+      val = {:vsigma, {:vbuiltin, :Int}, [], {:builtin, :Float}}
+      assert Pretty.pretty(val) == "Int * Float"
+    end
+
+    test "lambda with names" do
+      val = {:vlam, :omega, [], {:var, 0}}
+      assert Pretty.pretty(val, [:a], 1) == "fn(y) do y end"
+    end
+
+    test "arrow in domain is parenthesized" do
+      inner = {:vpi, :omega, {:vbuiltin, :Int}, [], {:builtin, :Int}}
+      outer = {:vpi, :omega, inner, [], {:builtin, :Int}}
+      assert Pretty.pretty(outer) == "(Int -> Int) -> Int"
+    end
+
+    test "non-arrow in domain is not parenthesized" do
+      outer = {:vpi, :omega, {:vbuiltin, :Int}, [], {:builtin, :Int}}
+      assert Pretty.pretty(outer) == "Int -> Int"
+    end
+
+    test "pick_name cycles through names" do
+      # Level 8 wraps around to :x (8 mod 8 = 0).
+      val = {:vlam, :omega, [], {:var, 0}}
+      result = Pretty.pretty(val, [:a, :b, :c, :d, :e, :f, :g, :h], 8)
+      assert result == "fn(x) do x end"
+    end
+  end
+
+  # ============================================================================
+  # uses_var_zero? coverage via pretty_term (avoids eval issues with case/con/data)
+  # ============================================================================
+
+  describe "uses_var_zero? — dependent detection via pretty_term" do
+    test "pi with lam body referencing var 0" do
+      # {:lam, :omega, {:var, 1}} uses var 0 (shifted by 1 under lam).
+      result =
+        Pretty.pretty_term({:pi, :omega, {:type, {:llit, 0}}, {:lam, :omega, {:var, 1}}}, [])
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi with app body referencing var 0" do
+      result =
+        Pretty.pretty_term({:pi, :omega, {:type, {:llit, 0}}, {:app, {:var, 0}, {:lit, 1}}}, [])
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi with pair body referencing var 0" do
+      result =
+        Pretty.pretty_term({:pi, :omega, {:type, {:llit, 0}}, {:pair, {:var, 0}, {:lit, 1}}}, [])
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi with fst body referencing var 0" do
+      result = Pretty.pretty_term({:pi, :omega, {:type, {:llit, 0}}, {:fst, {:var, 0}}}, [])
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi with snd body referencing var 0" do
+      result = Pretty.pretty_term({:pi, :omega, {:type, {:llit, 0}}, {:snd, {:var, 0}}}, [])
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi with let body referencing var 0" do
+      result =
+        Pretty.pretty_term({:pi, :omega, {:type, {:llit, 0}}, {:let, {:var, 0}, {:lit, 1}}}, [])
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi with spanned body referencing var 0" do
+      span = Pentiment.Span.Byte.new(0, 1)
+
+      result =
+        Pretty.pretty_term({:pi, :omega, {:type, {:llit, 0}}, {:spanned, span, {:var, 0}}}, [])
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi with case body referencing var 0" do
+      result =
+        Pretty.pretty_term(
+          {:pi, :omega, {:type, {:llit, 0}}, {:case, {:var, 0}, [{:Z, 0, {:lit, 0}}]}},
+          []
+        )
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi with con body referencing var 0" do
+      result =
+        Pretty.pretty_term(
+          {:pi, :omega, {:type, {:llit, 0}}, {:con, :Nat, :Succ, [{:var, 0}]}},
+          []
+        )
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi with data body referencing var 0" do
+      result =
+        Pretty.pretty_term({:pi, :omega, {:type, {:llit, 0}}, {:data, :Nat, [{:var, 0}]}}, [])
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi with var 1 in body is non-dependent" do
+      result = Pretty.pretty_term({:pi, :omega, {:type, {:llit, 0}}, {:var, 1}}, [])
+      # Non-dependent: arrow sugar.
+      assert result =~ "->"
+      refute result =~ "(x :"
+    end
+
+    test "sigma with lam body referencing var 0" do
+      result = Pretty.pretty_term({:sigma, {:type, {:llit, 0}}, {:lam, :omega, {:var, 1}}}, [])
+      assert result =~ "(x : Type,"
+    end
+
+    test "sigma with app referencing var 0" do
+      result = Pretty.pretty_term({:sigma, {:type, {:llit, 0}}, {:app, {:var, 0}, {:lit, 1}}}, [])
+      assert result =~ "(x : Type,"
+    end
+
+    test "sigma with pair referencing var 0" do
+      result =
+        Pretty.pretty_term({:sigma, {:type, {:llit, 0}}, {:pair, {:var, 0}, {:lit, 1}}}, [])
+
+      assert result =~ "(x : Type,"
+    end
+
+    test "sigma with fst referencing var 0" do
+      result = Pretty.pretty_term({:sigma, {:type, {:llit, 0}}, {:fst, {:var, 0}}}, [])
+      assert result =~ "(x : Type,"
+    end
+
+    test "sigma with snd referencing var 0" do
+      result = Pretty.pretty_term({:sigma, {:type, {:llit, 0}}, {:snd, {:var, 0}}}, [])
+      assert result =~ "(x : Type,"
+    end
+
+    test "sigma with let referencing var 0" do
+      result = Pretty.pretty_term({:sigma, {:type, {:llit, 0}}, {:let, {:var, 0}, {:lit, 1}}}, [])
+      assert result =~ "(x : Type,"
+    end
+
+    test "sigma with spanned referencing var 0" do
+      span = Pentiment.Span.Byte.new(0, 1)
+      result = Pretty.pretty_term({:sigma, {:type, {:llit, 0}}, {:spanned, span, {:var, 0}}}, [])
+      assert result =~ "(x : Type,"
+    end
+
+    test "sigma with case referencing var 0" do
+      result =
+        Pretty.pretty_term(
+          {:sigma, {:type, {:llit, 0}}, {:case, {:var, 0}, [{:Z, 0, {:lit, 0}}]}},
+          []
+        )
+
+      assert result =~ "(x : Type,"
+    end
+
+    test "sigma with case not referencing var 0 (but branch body does under shift)" do
+      result =
+        Pretty.pretty_term(
+          {:sigma, {:type, {:llit, 0}}, {:case, {:lit, 0}, [{:Succ, 1, {:var, 1}}]}},
+          []
+        )
+
+      assert result =~ "(x : Type,"
+    end
+  end
+
+  # ============================================================================
+  # uses_var_zero_shifted? coverage
+  # ============================================================================
+
+  describe "uses_var_zero_shifted? coverage" do
+    test "pi codomain with pi inside referencing var 0 at shifted position" do
+      # Pi(omega, Type, Pi(omega, Type, var(1)))
+      # var(1) at depth 2 is var 0 shifted by 1.
+      result =
+        Pretty.pretty_term(
+          {:pi, :omega, {:type, {:llit, 0}}, {:pi, :omega, {:type, {:llit, 0}}, {:var, 1}}},
+          []
+        )
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "sigma codomain with sigma inside" do
+      result =
+        Pretty.pretty_term(
+          {:sigma, {:type, {:llit, 0}}, {:sigma, {:type, {:llit, 0}}, {:var, 1}}},
+          []
+        )
+
+      assert result =~ "(x : Type,"
+    end
+
+    test "sigma codomain with pair inside referencing shifted var" do
+      result =
+        Pretty.pretty_term({:sigma, {:type, {:llit, 0}}, {:pair, {:var, 0}, {:lit, 1}}}, [])
+
+      assert result =~ "(x : Type,"
+    end
+
+    test "sigma codomain with fst inside referencing shifted var" do
+      result = Pretty.pretty_term({:sigma, {:type, {:llit, 0}}, {:fst, {:var, 0}}}, [])
+      assert result =~ "(x : Type,"
+    end
+
+    test "sigma codomain with snd inside referencing shifted var" do
+      result = Pretty.pretty_term({:sigma, {:type, {:llit, 0}}, {:snd, {:var, 0}}}, [])
+      assert result =~ "(x : Type,"
+    end
+
+    test "sigma codomain with let inside referencing shifted var" do
+      result = Pretty.pretty_term({:sigma, {:type, {:llit, 0}}, {:let, {:var, 0}, {:lit, 1}}}, [])
+      assert result =~ "(x : Type,"
+    end
+
+    test "sigma codomain with spanned inside referencing shifted var" do
+      span = Pentiment.Span.Byte.new(0, 1)
+      result = Pretty.pretty_term({:sigma, {:type, {:llit, 0}}, {:spanned, span, {:var, 0}}}, [])
+      assert result =~ "(x : Type,"
+    end
+
+    test "non-dependent pi with complex codomain not using var 0" do
+      # Codomain: {:lam, :omega, {:lit, 42}} — doesn't reference var 0.
+      result = Pretty.pretty_term({:pi, :omega, {:builtin, :Int}, {:lam, :omega, {:lit, 42}}}, [])
+      assert result =~ "->"
+    end
+
+    # These tests exercise uses_var_zero_shifted? at deeper nesting levels.
+    # The Pi codomain body contains a binder (lam/pi/sigma/let) whose inner body
+    # references var 0 at a further shifted position.
+
+    test "pi codomain with lam whose body refs var 0 at shift 2" do
+      # Pi(omega, Type, lam(omega, var(2))) — var(2) at depth 2 is shifted var 0.
+      # But uses_var_zero_shifted? is called with the Pi codomain body.
+      # The codomain is {:lam, :omega, {:var, 2}}. uses_var_zero? sees lam, calls shifted(body, 1).
+      # shifted({:var, 2}, 1) => 2 == 1? No. Not dependent.
+      # For it to be dependent: codomain must ref var 0. Let's use:
+      # {:lam, :omega, {:app, {:var, 1}, {:var, 0}}} — var(1) IS var 0 shifted.
+      result =
+        Pretty.pretty_term(
+          {:pi, :omega, {:type, {:llit, 0}}, {:lam, :omega, {:app, {:var, 1}, {:var, 0}}}},
+          []
+        )
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi codomain with app of shifted var" do
+      # {:app, {:var, 0}, {:var, 0}} — var(0) IS var 0.
+      result =
+        Pretty.pretty_term(
+          {:pi, :omega, {:type, {:llit, 0}}, {:app, {:var, 0}, {:var, 0}}},
+          []
+        )
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi codomain with pi whose codomain refs shifted var" do
+      # {:pi, :omega, {:type, {:llit, 0}}, {:var, 1}} — var(1) at shift+1 is shifted var 0.
+      result =
+        Pretty.pretty_term(
+          {:pi, :omega, {:type, {:llit, 0}}, {:pi, :omega, {:type, {:llit, 0}}, {:var, 1}}},
+          []
+        )
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi codomain with sigma whose b refs shifted var" do
+      result =
+        Pretty.pretty_term(
+          {:pi, :omega, {:type, {:llit, 0}}, {:sigma, {:type, {:llit, 0}}, {:var, 1}}},
+          []
+        )
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi codomain with pair of shifted vars" do
+      result =
+        Pretty.pretty_term(
+          {:pi, :omega, {:type, {:llit, 0}}, {:pair, {:var, 0}, {:var, 0}}},
+          []
+        )
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi codomain with fst of shifted var" do
+      result =
+        Pretty.pretty_term(
+          {:pi, :omega, {:type, {:llit, 0}}, {:fst, {:var, 0}}},
+          []
+        )
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi codomain with snd of shifted var" do
+      result =
+        Pretty.pretty_term(
+          {:pi, :omega, {:type, {:llit, 0}}, {:snd, {:var, 0}}},
+          []
+        )
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi codomain with let whose def refs shifted var" do
+      result =
+        Pretty.pretty_term(
+          {:pi, :omega, {:type, {:llit, 0}}, {:let, {:var, 0}, {:lit, 1}}},
+          []
+        )
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "pi codomain with spanned shifted var" do
+      span = Pentiment.Span.Byte.new(0, 1)
+
+      result =
+        Pretty.pretty_term(
+          {:pi, :omega, {:type, {:llit, 0}}, {:spanned, span, {:var, 0}}},
+          []
+        )
+
+      assert result =~ "(x : Type)"
+    end
+
+    # Now test uses_var_zero_shifted? being called from within a Sigma codomain,
+    # where the body itself has nested binders that shift further.
+
+    test "sigma codomain with nested lam referencing shifted var" do
+      # Sigma(Type, lam(omega, var(1))) — lam body uses var(1) which is shifted var(0).
+      result =
+        Pretty.pretty_term(
+          {:sigma, {:type, {:llit, 0}}, {:lam, :omega, {:var, 1}}},
+          []
+        )
+
+      assert result =~ "(x : Type,"
+    end
+
+    test "sigma codomain with nested pi referencing shifted var" do
+      result =
+        Pretty.pretty_term(
+          {:sigma, {:type, {:llit, 0}}, {:pi, :omega, {:type, {:llit, 0}}, {:var, 1}}},
+          []
+        )
+
+      assert result =~ "(x : Type,"
+    end
+
+    test "sigma codomain with nested sigma referencing shifted var" do
+      result =
+        Pretty.pretty_term(
+          {:sigma, {:type, {:llit, 0}}, {:sigma, {:type, {:llit, 0}}, {:var, 1}}},
+          []
+        )
+
+      assert result =~ "(x : Type,"
+    end
+
+    test "sigma codomain with nested let referencing shifted var" do
+      result =
+        Pretty.pretty_term(
+          {:sigma, {:type, {:llit, 0}}, {:let, {:var, 0}, {:var, 1}}},
+          []
+        )
+
+      assert result =~ "(x : Type,"
+    end
+  end
+
+  # ============================================================================
+  # pretty_term for coverage of shifted uses
+  # ============================================================================
+
+  describe "pretty_term — shifted var coverage" do
+    test "dependent pi with lam in codomain" do
+      # Pi(omega, Type, lam(omega, var(1))) — var(1) at depth 2 IS var 0 shifted.
+      result =
+        Pretty.pretty_term({:pi, :omega, {:type, {:llit, 0}}, {:lam, :omega, {:var, 1}}}, [])
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "dependent sigma with app in body" do
+      result = Pretty.pretty_term({:sigma, {:type, {:llit, 0}}, {:app, {:var, 0}, {:lit, 1}}}, [])
+      assert result =~ "(x : Type,"
+    end
+
+    test "non-dependent sigma with no var 0 reference" do
+      result = Pretty.pretty_term({:sigma, {:builtin, :Int}, {:lit, 42}}, [])
+      assert result =~ "Int * "
+    end
+  end
+
+  # ============================================================================
   # Property tests
   # ============================================================================
 

@@ -502,6 +502,176 @@ defmodule Haruspex.CheckTest do
   end
 
   # ============================================================================
+  # Inserted meta synth
+  # ============================================================================
+
+  describe "synth/2 — inserted_meta" do
+    test "inserted meta evaluates and re-synths" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vlit, 42})
+      ctx = Check.from_meta_state(ms)
+
+      # An inserted_meta with the solved meta.
+      term = {:inserted_meta, id, []}
+
+      {:ok, _term, type, _ctx} = Check.synth(ctx, term)
+      assert type == {:vbuiltin, :Int}
+    end
+  end
+
+  # ============================================================================
+  # Zonking — additional coverage
+  # ============================================================================
+
+  describe "zonk/3 — additional" do
+    test "zonk descends into sigma" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vtype, {:llit, 0}}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vbuiltin, :Int})
+
+      assert Check.zonk(ms, 0, {:sigma, {:meta, id}, {:builtin, :Int}}) ==
+               {:sigma, {:builtin, :Int}, {:builtin, :Int}}
+    end
+
+    test "zonk descends into fst" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vlit, 1})
+
+      assert Check.zonk(ms, 0, {:fst, {:meta, id}}) == {:fst, {:lit, 1}}
+    end
+
+    test "zonk descends into snd" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vlit, 1})
+
+      assert Check.zonk(ms, 0, {:snd, {:meta, id}}) == {:snd, {:lit, 1}}
+    end
+
+    test "zonk descends into let" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vlit, 1})
+
+      assert Check.zonk(ms, 0, {:let, {:meta, id}, {:var, 0}}) == {:let, {:lit, 1}, {:var, 0}}
+    end
+
+    test "zonk descends into spanned" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vlit, 1})
+
+      span = Pentiment.Span.Byte.new(0, 5)
+      assert Check.zonk(ms, 0, {:spanned, span, {:meta, id}}) == {:spanned, span, {:lit, 1}}
+    end
+
+    test "zonk on inserted_meta: solved" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vlit, 42})
+
+      assert Check.zonk(ms, 0, {:inserted_meta, id, []}) == {:lit, 42}
+    end
+
+    test "zonk on inserted_meta: unsolved" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+
+      assert Check.zonk(ms, 0, {:inserted_meta, id, []}) == {:inserted_meta, id, []}
+    end
+  end
+
+  # ============================================================================
+  # Builtin op types — additional coverage
+  # ============================================================================
+
+  describe "builtin op types — additional" do
+    test "builtin :not synthesizes Atom -> Atom" do
+      {:ok, {:builtin, :not}, type, _ctx} = Check.synth(Check.new(), {:builtin, :not})
+      assert {:vpi, :omega, {:vbuiltin, :Atom}, [], {:builtin, :Atom}} = type
+    end
+
+    test "builtin :and synthesizes Atom -> Atom -> Atom" do
+      {:ok, {:builtin, :and}, type, _ctx} = Check.synth(Check.new(), {:builtin, :and})
+      assert {:vpi, :omega, {:vbuiltin, :Atom}, [], _cod} = type
+    end
+
+    test "builtin :or synthesizes Atom -> Atom -> Atom" do
+      {:ok, {:builtin, :or}, type, _ctx} = Check.synth(Check.new(), {:builtin, :or})
+      assert {:vpi, :omega, {:vbuiltin, :Atom}, [], _cod} = type
+    end
+
+    test "unknown builtin synthesizes Type 0" do
+      {:ok, {:builtin, :unknown_op}, type, _ctx} =
+        Check.synth(Check.new(), {:builtin, :unknown_op})
+
+      assert type == {:vtype, {:llit, 0}}
+    end
+  end
+
+  # ============================================================================
+  # Post-processing — universe error
+  # ============================================================================
+
+  describe "post_process — universe error" do
+    test "unsatisfiable level constraints produce universe error" do
+      ms = MetaState.new()
+      # Create a cycle: ?l0 = succ(?l0).
+      ms = MetaState.add_constraint(ms, {:eq, {:lvar, 0}, {:lsucc, {:lvar, 0}}})
+      ctx = Check.from_meta_state(ms)
+
+      assert {:error, {:universe_error, _}} = Check.post_process(ctx)
+    end
+  end
+
+  # ============================================================================
+  # Post-process — solved metas are skipped
+  # ============================================================================
+
+  describe "post_process — solved metas" do
+    test "solved metas are skipped in post_process reduce" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vlit, 42})
+      ctx = Check.from_meta_state(ms)
+
+      # The solved meta hits the `_, acc` catch-all branch.
+      assert {:ok, _ctx} = Check.post_process(ctx)
+    end
+
+    test "mix of solved and hole metas" do
+      ms = MetaState.new()
+      {id_solved, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id_solved, {:vlit, 42})
+      {_id_hole, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Float}, 0, :hole)
+      ctx = Check.from_meta_state(ms)
+
+      assert {:ok, ctx} = Check.post_process(ctx)
+      assert [%{expected_type: "Float"}] = ctx.hole_reports
+    end
+  end
+
+  # ============================================================================
+  # Collect bindings
+  # ============================================================================
+
+  describe "collect_bindings — coverage" do
+    test "hole report includes bindings from context" do
+      ms = MetaState.new()
+      {_id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :hole)
+      ctx = %{Check.from_meta_state(ms) | names: [:x]}
+      ctx = extend(ctx, :x, {:vbuiltin, :Int}, :omega)
+
+      assert {:ok, ctx} = Check.post_process(ctx)
+      assert [%{bindings: bindings}] = ctx.hole_reports
+      assert length(bindings) > 0
+      assert {_, "Int"} = List.last(bindings)
+    end
+  end
+
+  # ============================================================================
   # Property tests
   # ============================================================================
 

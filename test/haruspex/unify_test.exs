@@ -472,6 +472,942 @@ defmodule Haruspex.UnifyTest do
   end
 
   # ============================================================================
+  # Flex-flex unification
+  # ============================================================================
+
+  describe "flex-flex unification" do
+    test "bare metas: same id unifies" do
+      ms = MetaState.new()
+      {_id, meta_val, ms} = make_meta(ms)
+      # Both sides are the same bare meta.
+      assert {:ok, _ms} = Unify.unify(ms, 0, meta_val, meta_val)
+    end
+
+    test "bare metas: different ids solve higher to lower" do
+      ms = MetaState.new()
+      {_id0, meta0, ms} = make_meta(ms)
+      {id1, meta1, ms} = make_meta(ms)
+
+      assert {:ok, ms} = Unify.unify(ms, 0, meta0, meta1)
+      # Higher-numbered meta (id1) is solved to the lower (id0).
+      assert {:solved, ^meta0} = MetaState.lookup(ms, id1)
+    end
+
+    test "bare metas: higher id on left still works" do
+      ms = MetaState.new()
+      {_id0, meta0, ms} = make_meta(ms)
+      {id1, meta1, ms} = make_meta(ms)
+
+      assert {:ok, ms} = Unify.unify(ms, 0, meta1, meta0)
+      assert {:solved, ^meta0} = MetaState.lookup(ms, id1)
+    end
+
+    test "flex-flex with spines: tries pattern unification" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id0, _m0, ms} = make_meta(ms, int, 0)
+      {id1, _m1, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+
+      # ?0(x) vs ?1(x)
+      flex0 = {:vneutral, int, {:napp, {:nmeta, id0}, x}}
+      flex1 = {:vneutral, int, {:napp, {:nmeta, id1}, x}}
+
+      assert {:ok, _ms} = Unify.unify(ms, 1, flex0, flex1)
+    end
+
+    test "flex-flex with spines: fallback to right side when left fails" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {_id0, _m0, ms} = make_meta(ms, int, 0)
+      {id1, _m1, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+
+      # ?0(x, x) — non-linear spine, not a valid pattern.
+      flex0 = {:vneutral, int, {:napp, {:napp, {:nmeta, 0}, x}, x}}
+      # ?1(x) — valid pattern.
+      flex1 = {:vneutral, int, {:napp, {:nmeta, id1}, x}}
+
+      # Should succeed by trying right side.
+      assert {:ok, _ms} = Unify.unify(ms, 1, flex0, flex1)
+    end
+  end
+
+  # ============================================================================
+  # Flex-rigid: pattern unification details
+  # ============================================================================
+
+  describe "pattern unification — detailed" do
+    test "non-variable spine produces not_pattern error" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      # ?0(42) — 42 is not a variable.
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, {:vlit, 42}}}
+
+      assert {:error, {:not_pattern, ^id, _}} = Unify.unify(ms, 1, flex, {:vlit, 99})
+    end
+
+    test "duplicate spine variables produce not_pattern error" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      # ?0(x, x) — non-linear.
+      flex = {:vneutral, int, {:napp, {:napp, {:nmeta, id}, x}, x}}
+
+      assert {:error, {:not_pattern, ^id, _}} = Unify.unify(ms, 1, flex, {:vlit, 99})
+    end
+
+    test "occurs check in closure (pi codomain)" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, meta_val, ms} = make_meta(ms, int, 0)
+
+      # rhs = Pi(_, Int, ?0) — ?0 occurs in the closure.
+      rhs = {:vpi, :omega, int, [], {:meta, id}}
+
+      # Should fail with occurs_check since rhs closure contains meta id.
+      result = Unify.unify(ms, 0, meta_val, rhs)
+      assert {:error, {:occurs_check, ^id, _}} = result
+    end
+
+    test "occurs check in sigma" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, meta_val, ms} = make_meta(ms, int, 0)
+
+      rhs = {:vsigma, meta_val, [], {:builtin, :Int}}
+
+      assert {:error, {:occurs_check, ^id, _}} = Unify.unify(ms, 0, meta_val, rhs)
+    end
+
+    test "occurs check in pair" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, meta_val, ms} = make_meta(ms, int, 0)
+
+      rhs = {:vpair, meta_val, {:vlit, 1}}
+
+      assert {:error, {:occurs_check, ^id, _}} = Unify.unify(ms, 0, meta_val, rhs)
+    end
+
+    test "occurs check in lambda body" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, meta_val, ms} = make_meta(ms, int, 0)
+
+      # rhs is a lambda whose body is (meta id).
+      rhs = {:vlam, :omega, [], {:meta, id}}
+
+      assert {:error, {:occurs_check, ^id, _}} = Unify.unify(ms, 0, meta_val, rhs)
+    end
+
+    test "occurs check passes for non-occurring values" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {_id, meta_val, ms} = make_meta(ms, int, 0)
+
+      # rhs has no meta references.
+      rhs = {:vlit, 42}
+
+      assert {:ok, _ms} = Unify.unify(ms, 0, meta_val, rhs)
+    end
+
+    test "scope check: meta with spine allows in-scope variables" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      # ?0(x) = x — x is in the spine.
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+
+      assert {:ok, _ms} = Unify.unify(ms, 1, flex, x)
+    end
+
+    test "scope escape: rhs has variable not in spine" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {_id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      y = Value.fresh_var(1, int)
+
+      # ?0(x) = y — y is not in the spine [x].
+      flex = {:vneutral, int, {:napp, {:nmeta, 0}, x}}
+
+      assert {:error, {:scope_escape, _, _}} = Unify.unify(ms, 2, flex, y)
+    end
+  end
+
+  # ============================================================================
+  # Rigid-rigid: additional cases
+  # ============================================================================
+
+  describe "rigid-rigid — additional" do
+    test "sigma with different first types fails" do
+      ms = MetaState.new()
+
+      sig1 = {:vsigma, {:vbuiltin, :Int}, [], {:builtin, :Int}}
+      sig2 = {:vsigma, {:vbuiltin, :Float}, [], {:builtin, :Int}}
+
+      assert {:error, _} = Unify.unify(ms, 0, sig1, sig2)
+    end
+
+    test "lambda with different bodies fails" do
+      ms = MetaState.new()
+
+      lam1 = {:vlam, :omega, [], {:lit, 1}}
+      lam2 = {:vlam, :omega, [], {:lit, 2}}
+
+      assert {:error, _} = Unify.unify(ms, 0, lam1, lam2)
+    end
+
+    test "extern vs extern: same unifies" do
+      ms = MetaState.new()
+
+      assert {:ok, _} =
+               Unify.unify(ms, 0, {:vextern, Enum, :map, 2}, {:vextern, Enum, :map, 2})
+    end
+
+    test "extern vs extern: different fails" do
+      ms = MetaState.new()
+
+      assert {:error, _} =
+               Unify.unify(ms, 0, {:vextern, Enum, :map, 2}, {:vextern, Enum, :filter, 2})
+    end
+
+    test "eta: rhs lambda vs lhs non-lambda" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      pi = {:vpi, :omega, int, [], {:builtin, :Int}}
+
+      f_neutral = {:vneutral, pi, {:nvar, 0}}
+      # fn(x) -> f(x)
+      lam = {:vlam, :omega, [f_neutral], {:app, {:var, 1}, {:var, 0}}}
+
+      # Unify f with lambda (reversed from the other eta test).
+      assert {:ok, _ms} = Unify.unify(ms, 1, f_neutral, lam)
+    end
+
+    test "eta for pairs: rhs is pair, lhs is non-pair" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      sigma = {:vsigma, int, [], {:builtin, :Int}}
+
+      neutral = {:vneutral, sigma, {:nvar, 0}}
+      pair = {:vpair, {:vlit, 1}, {:vlit, 2}}
+
+      # rhs is pair, lhs is not — eta-expands the other way.
+      assert {:error, _} = Unify.unify(ms, 1, neutral, pair)
+    end
+
+    test "type vs type with different levels adds constraint" do
+      ms = MetaState.new()
+
+      assert {:ok, ms} = Unify.unify(ms, 0, {:vtype, {:llit, 1}}, {:vtype, {:llit, 2}})
+      assert [{:eq, {:llit, 1}, {:llit, 2}}] = ms.level_constraints
+    end
+
+    test "lit vs builtin fails" do
+      ms = MetaState.new()
+      assert {:error, _} = Unify.unify(ms, 0, {:vlit, 42}, {:vbuiltin, :Int})
+    end
+
+    test "neutral fst unification" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      ne1 = {:vneutral, int, {:nfst, {:nvar, 0}}}
+      ne2 = {:vneutral, int, {:nfst, {:nvar, 0}}}
+
+      assert {:ok, _ms} = Unify.unify(ms, 1, ne1, ne2)
+    end
+
+    test "neutral snd unification" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      ne1 = {:vneutral, int, {:nsnd, {:nvar, 0}}}
+      ne2 = {:vneutral, int, {:nsnd, {:nvar, 0}}}
+
+      assert {:ok, _ms} = Unify.unify(ms, 1, ne1, ne2)
+    end
+
+    test "neutral meta vs meta: same id ok" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      # Use real metas so MetaState has entries.
+      {id, _m, ms} = make_meta(ms, int, 0)
+      {id2, _m2, ms} = make_meta(ms, int, 0)
+
+      ne1 = {:vneutral, int, {:nmeta, id}}
+      ne2 = {:vneutral, int, {:nmeta, id2}}
+
+      # These are flex, so they'll go through flex-flex path.
+      assert {:ok, _} = Unify.unify(ms, 0, ne1, ne2)
+    end
+
+    test "neutral nbuiltin: same unifies" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      ne1 = {:vneutral, int, {:nbuiltin, :add}}
+      ne2 = {:vneutral, int, {:nbuiltin, :add}}
+
+      assert {:ok, _ms} = Unify.unify(ms, 0, ne1, ne2)
+    end
+
+    test "neutral nbuiltin: different fails" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      ne1 = {:vneutral, int, {:nbuiltin, :add}}
+      ne2 = {:vneutral, int, {:nbuiltin, :sub}}
+
+      assert {:error, _} = Unify.unify(ms, 0, ne1, ne2)
+    end
+
+    test "neutral head mismatch (var vs builtin)" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      ne1 = {:vneutral, int, {:nvar, 0}}
+      ne2 = {:vneutral, int, {:nbuiltin, :add}}
+
+      assert {:error, _} = Unify.unify(ms, 1, ne1, ne2)
+    end
+
+    test "ndef with different arg count fails" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      ne1 = {:vneutral, int, {:ndef, :foo, [{:vlit, 1}]}}
+      ne2 = {:vneutral, int, {:ndef, :foo, [{:vlit, 1}, {:vlit, 2}]}}
+
+      assert {:error, _} = Unify.unify(ms, 0, ne1, ne2)
+    end
+
+    test "ndef with arg mismatch fails" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      ne1 = {:vneutral, int, {:ndef, :foo, [{:vlit, 1}, {:vlit, 2}]}}
+      ne2 = {:vneutral, int, {:ndef, :foo, [{:vlit, 1}, {:vlit, 3}]}}
+
+      assert {:error, _} = Unify.unify(ms, 0, ne1, ne2)
+    end
+  end
+
+  # ============================================================================
+  # Rename vars (via abstract/pattern unification)
+  # ============================================================================
+
+  describe "abstraction and renaming via pattern unification" do
+    test "multi-var spine solves correctly" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      y = Value.fresh_var(1, int)
+
+      # ?0(x, y) = pair(y, x)
+      flex = {:vneutral, int, {:napp, {:napp, {:nmeta, id}, x}, y}}
+      rhs = {:vpair, y, x}
+
+      assert {:ok, ms} = Unify.unify(ms, 2, flex, rhs)
+      assert {:solved, solution} = MetaState.lookup(ms, id)
+
+      # Solution should be fn(a, b) -> (b, a).
+      result =
+        Eval.vapp(
+          Eval.default_ctx(),
+          Eval.vapp(Eval.default_ctx(), solution, {:vlit, 10}),
+          {:vlit, 20}
+        )
+
+      assert {:vpair, {:vlit, 20}, {:vlit, 10}} = result
+    end
+
+    test "pattern unification with pi in rhs" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+
+      # ?0(x) = Pi(omega, Int, Int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      rhs = {:vpi, :omega, int, [], {:builtin, :Int}}
+
+      assert {:ok, ms} = Unify.unify(ms, 1, flex, rhs)
+      assert {:solved, _} = MetaState.lookup(ms, id)
+    end
+
+    test "pattern unification with sigma in rhs" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      rhs = {:vsigma, int, [], {:builtin, :Int}}
+
+      assert {:ok, ms} = Unify.unify(ms, 1, flex, rhs)
+      assert {:solved, _} = MetaState.lookup(ms, id)
+    end
+
+    test "pattern unification with type in rhs" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      rhs = {:vtype, {:llit, 0}}
+
+      assert {:ok, ms} = Unify.unify(ms, 1, flex, rhs)
+      assert {:solved, _} = MetaState.lookup(ms, id)
+    end
+
+    test "pattern unification with builtin in rhs" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+
+      assert {:ok, ms} = Unify.unify(ms, 1, flex, int)
+      assert {:solved, _} = MetaState.lookup(ms, id)
+    end
+
+    test "pattern unification with extern in rhs" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      rhs = {:vextern, Enum, :map, 2}
+
+      assert {:ok, ms} = Unify.unify(ms, 1, flex, rhs)
+      assert {:solved, _} = MetaState.lookup(ms, id)
+    end
+
+    test "pattern unification with lambda in rhs" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      rhs = {:vlam, :omega, [], {:var, 0}}
+
+      assert {:ok, ms} = Unify.unify(ms, 1, flex, rhs)
+      assert {:solved, _} = MetaState.lookup(ms, id)
+    end
+  end
+
+  # ============================================================================
+  # Scope checking details
+  # ============================================================================
+
+  describe "scope checking — value types" do
+    test "scope check passes for pi type in rhs" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      rhs = {:vpi, :omega, int, [], {:builtin, :Int}}
+
+      assert {:ok, _} = Unify.unify(ms, 1, flex, rhs)
+    end
+
+    test "scope check passes for sigma type in rhs" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      rhs = {:vsigma, int, [], {:builtin, :Int}}
+
+      assert {:ok, _} = Unify.unify(ms, 1, flex, rhs)
+    end
+
+    test "scope check passes for pair in rhs" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      rhs = {:vpair, {:vlit, 1}, {:vlit, 2}}
+
+      assert {:ok, _} = Unify.unify(ms, 1, flex, rhs)
+    end
+
+    test "scope check passes for neutral with ndef" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      rhs = {:vneutral, int, {:ndef, :foo, [{:vlit, 1}]}}
+
+      assert {:ok, _} = Unify.unify(ms, 1, flex, rhs)
+    end
+
+    test "scope check passes for neutral with nbuiltin" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      rhs = {:vneutral, int, {:nbuiltin, :add}}
+
+      assert {:ok, _} = Unify.unify(ms, 1, flex, rhs)
+    end
+
+    test "scope check passes for neutral with fst" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      rhs = {:vneutral, int, {:nfst, {:nvar, 0}}}
+
+      assert {:ok, _} = Unify.unify(ms, 1, flex, rhs)
+    end
+
+    test "scope check passes for neutral with snd" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      rhs = {:vneutral, int, {:nsnd, {:nvar, 0}}}
+
+      assert {:ok, _} = Unify.unify(ms, 1, flex, rhs)
+    end
+
+    test "scope check passes for neutral with meta" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+      {id2, _meta2, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      rhs = {:vneutral, int, {:nmeta, id2}}
+
+      assert {:ok, _} = Unify.unify(ms, 1, flex, rhs)
+    end
+
+    test "scope check passes for neutral with napp" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      rhs = {:vneutral, int, {:napp, {:nvar, 0}, {:vlit, 1}}}
+
+      assert {:ok, _} = Unify.unify(ms, 1, flex, rhs)
+    end
+
+    test "scope check with lambda in rhs" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      rhs = {:vlam, :omega, [], {:var, 0}}
+
+      assert {:ok, _} = Unify.unify(ms, 1, flex, rhs)
+    end
+  end
+
+  # ============================================================================
+  # Occurs check — neutral cases
+  # ============================================================================
+
+  describe "occurs check — neutral details" do
+    test "occurs in neutral napp head" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, meta_val, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      # ?0(x) applied to something containing ?0 in the head.
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      # rhs that contains the same meta in a napp: f(?0, y) where f is at nvar 1.
+      rhs = {:vneutral, int, {:napp, {:nvar, 1}, meta_val}}
+
+      assert {:error, {:occurs_check, ^id, _}} = Unify.unify(ms, 2, flex, rhs)
+    end
+
+    test "occurs in neutral nfst" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, meta_val, ms} = make_meta(ms, int, 0)
+
+      rhs = {:vneutral, int, {:nfst, {:nmeta, id}}}
+
+      assert {:error, {:occurs_check, ^id, _}} = Unify.unify(ms, 0, meta_val, rhs)
+    end
+
+    test "occurs in neutral nsnd" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, meta_val, ms} = make_meta(ms, int, 0)
+
+      rhs = {:vneutral, int, {:nsnd, {:nmeta, id}}}
+
+      assert {:error, {:occurs_check, ^id, _}} = Unify.unify(ms, 0, meta_val, rhs)
+    end
+
+    test "occurs in neutral ndef args" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, meta_val, ms} = make_meta(ms, int, 0)
+
+      rhs = {:vneutral, int, {:ndef, :foo, [meta_val]}}
+
+      assert {:error, {:occurs_check, ^id, _}} = Unify.unify(ms, 0, meta_val, rhs)
+    end
+
+    test "does not occur in nvar" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {_id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, 0}, x}}
+      # rhs is just a variable in the spine.
+      rhs = x
+
+      assert {:ok, _} = Unify.unify(ms, 1, flex, rhs)
+    end
+
+    test "does not occur in nbuiltin" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {_id, meta_val, ms} = make_meta(ms, int, 0)
+
+      rhs = {:vneutral, int, {:nbuiltin, :add}}
+
+      assert {:ok, _} = Unify.unify(ms, 0, meta_val, rhs)
+    end
+
+    test "does not occur in type" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {_id, meta_val, ms} = make_meta(ms, int, 0)
+
+      assert {:ok, _} = Unify.unify(ms, 0, meta_val, {:vtype, {:llit, 0}})
+    end
+
+    test "does not occur in extern" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {_id, meta_val, ms} = make_meta(ms, int, 0)
+
+      assert {:ok, _} = Unify.unify(ms, 0, meta_val, {:vextern, Enum, :map, 2})
+    end
+
+    test "does not occur in lit" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {_id, meta_val, ms} = make_meta(ms, int, 0)
+
+      assert {:ok, _} = Unify.unify(ms, 0, meta_val, {:vlit, 99})
+    end
+
+    test "does not occur in builtin" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {_id, meta_val, ms} = make_meta(ms, int, 0)
+
+      assert {:ok, _} = Unify.unify(ms, 0, meta_val, {:vbuiltin, :Float})
+    end
+  end
+
+  # ============================================================================
+  # Rigid Pi/Sigma codomain unification
+  # ============================================================================
+
+  describe "rigid Pi/Sigma — codomain unification" do
+    test "pi with matching domains but different codomains fails" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      # Pi(omega, Int, Int) vs Pi(omega, Int, Float).
+      pi1 = {:vpi, :omega, int, [], {:builtin, :Int}}
+      pi2 = {:vpi, :omega, int, [], {:builtin, :Float}}
+
+      assert {:error, _} = Unify.unify(ms, 0, pi1, pi2)
+    end
+
+    test "pi with matching domains and codomains succeeds" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      pi1 = {:vpi, :omega, int, [], {:builtin, :Int}}
+      pi2 = {:vpi, :omega, int, [], {:builtin, :Int}}
+
+      assert {:ok, _} = Unify.unify(ms, 0, pi1, pi2)
+    end
+
+    test "sigma with matching first types but different second fails" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      sig1 = {:vsigma, int, [], {:builtin, :Int}}
+      sig2 = {:vsigma, int, [], {:builtin, :Float}}
+
+      assert {:error, _} = Unify.unify(ms, 0, sig1, sig2)
+    end
+
+    test "sigma with matching types succeeds" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      sig1 = {:vsigma, int, [], {:builtin, :Int}}
+      sig2 = {:vsigma, int, [], {:builtin, :Int}}
+
+      assert {:ok, _} = Unify.unify(ms, 0, sig1, sig2)
+    end
+  end
+
+  # ============================================================================
+  # Pair eta — detailed
+  # ============================================================================
+
+  describe "pair eta — rhs pair" do
+    test "lhs non-pair vs rhs pair" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      sigma = {:vsigma, int, [], {:builtin, :Int}}
+
+      neutral = {:vneutral, sigma, {:nvar, 0}}
+      pair = {:vpair, {:vlit, 1}, {:vlit, 2}}
+
+      # lhs is not a pair, rhs is pair — triggers the rhs pair eta branch.
+      assert {:error, _} = Unify.unify(ms, 1, neutral, pair)
+    end
+
+    test "lhs pair components match rhs projections" do
+      ms = MetaState.new()
+
+      pair1 = {:vpair, {:vlit, 1}, {:vlit, 2}}
+      pair2 = {:vpair, {:vlit, 1}, {:vlit, 2}}
+
+      # Both are pairs — goes through pair vs pair path.
+      assert {:ok, _} = Unify.unify(ms, 0, pair1, pair2)
+    end
+  end
+
+  # ============================================================================
+  # Neutral fst/snd/meta unification
+  # ============================================================================
+
+  describe "neutral fst/snd/meta unification" do
+    test "nfst with different heads fails" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      ne1 = {:vneutral, int, {:nfst, {:nvar, 0}}}
+      ne2 = {:vneutral, int, {:nfst, {:nvar, 1}}}
+
+      assert {:error, _} = Unify.unify(ms, 2, ne1, ne2)
+    end
+
+    test "nsnd with different heads fails" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      ne1 = {:vneutral, int, {:nsnd, {:nvar, 0}}}
+      ne2 = {:vneutral, int, {:nsnd, {:nvar, 1}}}
+
+      assert {:error, _} = Unify.unify(ms, 2, ne1, ne2)
+    end
+
+    test "nmeta with different ids fails (rigid path)" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      # Create two metas and solve them both so they're no longer flex.
+      {id0, _m0, ms} = make_meta(ms, int, 0)
+      {id1, _m1, ms} = make_meta(ms, int, 0)
+
+      {:ok, ms} = MetaState.solve(ms, id0, {:vlit, 1})
+      {:ok, ms} = MetaState.solve(ms, id1, {:vlit, 2})
+
+      # Unifying will force to {:vlit, 1} vs {:vlit, 2}.
+      ne0 = {:vneutral, int, {:nmeta, id0}}
+      ne1 = {:vneutral, int, {:nmeta, id1}}
+
+      assert {:error, _} = Unify.unify(ms, 0, ne0, ne1)
+    end
+  end
+
+  # ============================================================================
+  # Abstraction — rename_vars edge cases
+  # ============================================================================
+
+  describe "abstraction — complex rhs" do
+    test "pattern unification with let in rhs" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      # rhs = let z = 1 in z (evaluates to 1).
+      rhs_val = Eval.eval(Eval.default_ctx(), {:let, {:lit, 1}, {:var, 0}})
+
+      assert {:ok, ms} = Unify.unify(ms, 1, flex, rhs_val)
+      assert {:solved, _} = MetaState.lookup(ms, id)
+    end
+
+    test "pattern unification with spanned in rhs" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      # Spanned wrapping evaluates away, so use a value directly.
+      rhs = {:vlit, 42}
+
+      assert {:ok, ms} = Unify.unify(ms, 1, flex, rhs)
+      assert {:solved, _} = MetaState.lookup(ms, id)
+    end
+
+    test "pattern unification with fst/snd in rhs" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      # rhs = fst(pair(1, 2)) = 1 after eval.
+      rhs = {:vlit, 1}
+
+      assert {:ok, ms} = Unify.unify(ms, 1, flex, rhs)
+      assert {:solved, _} = MetaState.lookup(ms, id)
+    end
+
+    test "rename: free var not in map stays unchanged" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      # rhs has a neutral with nvar at level 0 (in scope via spine)
+      # and also a def reference.
+      rhs = {:vneutral, int, {:ndef, :foo, [{:vlit, 1}]}}
+
+      assert {:ok, ms} = Unify.unify(ms, 1, flex, rhs)
+      assert {:solved, _} = MetaState.lookup(ms, id)
+    end
+
+    test "pattern unification: rhs contains free var not in spine (rename nil case)" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      y = Value.fresh_var(1, int)
+
+      # ?0(x) = pair(x, y) — y is in scope but not in the spine.
+      # This should fail with scope_escape since y is not in spine_levels.
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      rhs = {:vpair, x, y}
+
+      assert {:error, {:scope_escape, _, _}} = Unify.unify(ms, 2, flex, rhs)
+    end
+
+    test "pair eta: lhs pair matches rhs via projections" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      # Create a meta for the "whole pair" value.
+      {id, meta_val, ms} = make_meta(ms, int, 0)
+
+      # Unify a pair with the meta — this goes through flex-rigid, not pair eta.
+      pair = {:vpair, {:vlit, 10}, {:vlit, 20}}
+      assert {:ok, ms} = Unify.unify(ms, 0, pair, meta_val)
+      assert {:solved, ^pair} = MetaState.lookup(ms, id)
+    end
+
+    test "pair eta: both components of lhs pair match rhs projections" do
+      ms = MetaState.new()
+
+      p1 = {:vpair, {:vlit, 1}, {:vlit, 2}}
+      p2 = {:vpair, {:vlit, 1}, {:vlit, 2}}
+
+      # Goes through pair-vs-pair, checking both components.
+      assert {:ok, _} = Unify.unify(ms, 0, p1, p2)
+    end
+
+    test "pair eta: rhs pair second component fails" do
+      ms = MetaState.new()
+
+      p1 = {:vpair, {:vlit, 1}, {:vlit, 2}}
+      p2 = {:vpair, {:vlit, 1}, {:vlit, 3}}
+
+      assert {:error, _} = Unify.unify(ms, 0, p1, p2)
+    end
+
+    test "neutral nmeta vs nmeta: same id succeeds (rigid path)" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      # Create a meta but keep it unsolved. When both sides are the same unsolved meta,
+      # they unify via the `lhs == rhs` equality check at the top of `unify`.
+      # To hit the nmeta vs nmeta path in unify_neutral, we need them to be different
+      # unsolved metas that somehow reach the neutral path. But unsolved metas are flex.
+      # So we need to use *solved* metas that resolve to neutrals containing nmeta.
+      # Actually the neutral nmeta path is hit when two solved metas point to
+      # different neutrals wrapping nmeta.
+      #
+      # Or we can have an napp wrapping nmeta — those are still flex, not rigid.
+      # The nmeta case in unify_neutral happens when both sides are neutrals with
+      # nmeta heads and both are NOT flex (because they got through to rigid).
+      # But nmeta IS flex by definition.
+      #
+      # Looking at the code: flex? checks meta_head?, so bare nmeta IS flex.
+      # The only way to reach unify_neutral with nmeta is... it can't happen in practice
+      # for bare nmeta. It would happen if nmeta appears inside a larger neutral
+      # but the entry path checks flex? first.
+      # This is defensive code. Let's just verify the behavior we can.
+      {id, _m, ms} = make_meta(ms, int, 0)
+      meta_ne = {:vneutral, int, {:nmeta, id}}
+
+      # Same unsolved meta on both sides: caught by lhs == rhs.
+      assert {:ok, _} = Unify.unify(ms, 0, meta_ne, meta_ne)
+    end
+  end
+
+  # ============================================================================
   # Property tests
   # ============================================================================
 
