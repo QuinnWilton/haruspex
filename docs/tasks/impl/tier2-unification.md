@@ -27,14 +27,30 @@ Haruspex.Unify
 ```
 
 Cases (in order):
-1. Both sides identical (same pointer) → ok
-2. Force both sides (follow solved metas)
-3. Flex-flex: two unsolved metas → solve one to the other (if scopes compatible)
+1. Force both sides (follow solved metas)
+2. Both sides identical (structurally equal after forcing) → ok
+3. Flex-flex: two unsolved metas → solve higher-numbered to lower-numbered; with spines, try pattern unification on both sides
 4. Flex-rigid: one side is meta → pattern check spine, solve if valid
 5. Rigid-rigid: same head constructor → unify arguments recursively
-6. Eta: `VLam` vs non-`VLam` at function type → apply both to fresh var, unify bodies
-7. Eta: `VPair` vs non-`VPair` at sigma type → unify projections
-8. Otherwise → `{:error, {:type_mismatch, expected, got, span}}`
+   - `VPi`: check multiplicities match, unify domains, then codomains (evaluated with fresh var)
+   - `VSigma`: unify first types, then second types (evaluated with fresh var)
+   - `VLam`: apply both to fresh var, unify bodies
+   - `VPair`: unify both components
+   - `VType`: accumulate `{:eq, l1, l2}` level constraint in MetaState
+   - `VLit`: equal literals → ok
+   - `VBuiltin`: same name → ok
+   - `VExtern`: same module/function/arity → ok
+6. Eta for functions: `VLam` vs non-`VLam` → apply both to fresh var, unify bodies
+7. Eta for pairs: `VPair` vs non-`VPair` → unify via `vfst`/`vsnd` projections
+8. Neutral-neutral: structural spine comparison — same head, pairwise-unify arguments
+9. Otherwise → `{:error, {:mismatch, lhs, rhs}}`
+
+Error types:
+- `{:mismatch, Value.value(), Value.value()}` — structural mismatch
+- `{:occurs_check, meta_id, Value.value()}` — meta appears in its own solution
+- `{:scope_escape, meta_id, Value.value()}` — solution references out-of-scope variable
+- `{:not_pattern, meta_id, [Value.value()]}` — spine is not distinct bound variables
+- `{:multiplicity_mismatch, mult, mult}` — Pi multiplicities don't match
 
 ### Pattern unification
 
@@ -67,18 +83,26 @@ Algorithm: fixpoint iteration. Initialize all level vars to 0. Apply constraints
 - `solve` on already-solved with different value → error
 - `lookup` returns correct entry
 - `force` follows solved chains: meta A → meta B → VLit(42) → VLit(42)
+- `force` handles cycle (meta pointing to itself) without infinite loop
+- `add_constraint` accumulates level constraints
 
 **Unification:**
 - Same value → ok (VLit(1), VLit(1))
 - Different literals → mismatch error
+- Same builtin → ok, different builtins → mismatch
 - VPi vs VPi → unify domains and codomains
+- VPi with different multiplicities → `{:error, {:multiplicity_mismatch, ...}}`
 - VLam vs VLam → apply to fresh var, unify bodies
 - Eta: VLam vs neutral at Pi type → ok (eta-expand neutral)
-- Eta: VPair vs neutral at Sigma type → ok (project and unify)
+- Eta: VPair vs non-VPair → unify via projections (vfst/vsnd)
 - Meta solving: `?a = VLit(42)` → meta solved to `VLit(42)`
-- Pattern unification: `?a(x) = x + 1` → `?a = fn(x) do x + 1 end`
+- Meta = meta → solve higher-numbered to lower-numbered
+- Pattern unification: `?a(x) = x` → identity function, `?a(x) = lit` → constant function
 - Occurs check: `?a = Pi(_, ?a, _)` → error
 - Scope escape: `?a = x` where `x` is not in meta's scope → error
+- Neutral-neutral: same head and args → ok, different → mismatch
+- Forcing: solved metas on either side are resolved before comparison
+- Different universe levels → level constraint accumulated in MetaState
 
 **Level solver:**
 - `{:eq, ?l, {:llit, 0}}` → `?l = 0`
