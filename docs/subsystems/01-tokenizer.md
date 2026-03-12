@@ -14,14 +14,15 @@ Converts source text into a flat stream of tokens using NimbleParsec combinators
 ```elixir
 @type token_tag ::
   # keywords
-  :def | :do | :end | :type | :case | :fn | :let | :if | :else | :total |
+  :def | :do | :end | :type | :case | :fn | :let | :if | :else |
+  :import | :mutual | :class | :instance | :record | :where | :with |
   # literals
   :int | :float | :string | :atom_lit | :true | :false |
   # identifiers
   :ident | :upper_ident |
   # operators
   :plus | :minus | :star | :slash | :eq | :eq_eq | :neq | :lt | :gt | :lte | :gte |
-  :and_and | :or_or | :not | :pipe | :arrow | :fat_arrow | :colon | :dot |
+  :and_and | :or_or | :not | :pipe | :bar | :arrow | :fat_arrow | :colon | :dot |
   # delimiters
   :lparen | :rparen | :lbrace | :rbrace | :lbracket | :rbracket |
   :comma | :newline | :underscore | :at |

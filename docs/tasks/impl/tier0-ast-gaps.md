@@ -10,23 +10,23 @@ Fill gaps in the existing AST module and subsystem doc identified during audit.
 ## Gaps to resolve
 
 1. **Missing surface nodes for new features**: the existing AST needs nodes for:
-   - `{:import, span, module_path, open_option}` — import declarations (d29)
-   - `{:variable_decl, span, param}` — auto-implicit variable declarations (d24)
-   - `{:mutual, span, [toplevel]}` — mutual blocks (d25)
+   - ~~`{:import, span, module_path, open_option}` — import declarations (d29)~~ COMPLETE
+   - ~~`{:implicit_decl, span, [param]}` — auto-implicit variable declarations (d24)~~ COMPLETE (was `variable_decl`, renamed to `implicit_decl` and takes a list of params)
+   - ~~`{:mutual, span, [toplevel]}` — mutual blocks (d25)~~ COMPLETE
    - `{:extern, span, module, function, arity}` — extern annotation data (d27)
-   - `{:class_decl, span, name, [param], [constraint], [method_sig]}` — type class declarations (d20)
-   - `{:instance_decl, span, class_name, [type_arg], [constraint], [method_impl]}` — instance declarations (d20)
-   - `{:record_decl, span, name, [param], [field]}` — record declarations (d21)
-   - `{:with, span, [expr], [branch]}` — with-abstraction (d22)
-   - `{:dot, span, expr, field_name}` — field access (d21)
-   - `{:record_construct, span, name, [{atom, expr}]}` — record construction (d21)
-   - `{:record_update, span, expr, [{atom, expr}]}` — record update (d21)
+   - ~~`{:class_decl, span, name, [param], [constraint], [method_sig]}` — type class declarations (d20)~~ COMPLETE
+   - ~~`{:instance_decl, span, class_name, [type_arg], [constraint], [method_impl]}` — instance declarations (d20)~~ COMPLETE
+   - ~~`{:record_decl, span, name, [param], [field]}` — record declarations (d21)~~ COMPLETE
+   - `{:with, span, [expr], [branch]}` — with-abstraction (d22) — deferred to later tier
+   - ~~`{:dot, span, expr, field_name}` — field access (d21)~~ COMPLETE
+   - `{:record_construct, span, name, [{atom, expr}]}` — record construction (d21) — deferred to later tier
+   - `{:record_update, span, expr, [{atom, expr}]}` — record update (d21) — deferred to later tier
 
-2. **Type parameter specification**: `{:type_decl, span, name, [atom()], [constructor]}` uses `[atom()]` for type params but should carry kinds: `[{atom(), type_expr() | nil}]` to support `type Vec(a : Type, n : Nat)`.
+2. ~~**Type parameter specification**~~: COMPLETE. `type_param` is now `{atom(), type_expr()}` — kind is required, not optional. Supports `type Vec(a : Type, n : Nat)`.
 
-3. **Constructor return types**: constructors should optionally carry return types for GADTs: `{:constructor, span, name, [field], type_expr() | nil}`.
+3. ~~**Constructor return types**~~: COMPLETE. Constructors carry optional return types for GADTs: `{:constructor, span, name, [type_expr()], type_expr() | nil}`. Constructor fields are positional type args (`[type_expr()]`), not named fields.
 
-4. **Pattern for records**: `{:pat_record, span, name, [{atom, pattern}]}` for matching on record fields.
+4. **Pattern for records**: `{:pat_record, span, name, [{atom, pattern}]}` for matching on record fields — deferred to later tier.
 
 ## Implementation
 

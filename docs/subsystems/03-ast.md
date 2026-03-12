@@ -24,7 +24,7 @@ Defines the surface AST node types. All nodes are tagged tuples carrying `Pentim
   {:def, Span.t(), signature(), expr()}
   | {:type_decl, Span.t(), atom(), [type_param()], [constructor()]}
   | {:import, Span.t(), module_path(), open_option()}
-  | {:variable_decl, Span.t(), [param()]}
+  | {:implicit_decl, Span.t(), [param()]}
   | {:mutual, Span.t(), [toplevel()]}
   | {:class_decl, Span.t(), atom(), [param()], [constraint()], [method_sig()]}
   | {:instance_decl, Span.t(), atom(), [type_expr()], [constraint()], [method_impl()]}
@@ -33,11 +33,11 @@ Defines the surface AST node types. All nodes are tagged tuples carrying `Pentim
 @type signature :: {:sig, Span.t(), atom(), Span.t(), [param()], type_expr() | nil, attrs()}
   # {:sig, span, name, name_span, params, return_type, attrs}
 
-@type type_param :: {atom(), type_expr() | nil}
-  # type parameter with optional kind, e.g., (a : Type) or (n : Nat)
+@type type_param :: {atom(), type_expr()}
+  # type parameter with kind (required), e.g., (a : Type) or (n : Nat)
 
-@type constructor :: {:constructor, Span.t(), atom(), [field()], type_expr() | nil}
-  # constructor with named fields and optional return type (for GADTs)
+@type constructor :: {:constructor, Span.t(), atom(), [type_expr()], type_expr() | nil}
+  # constructor with positional type args and optional return type (for GADTs)
 
 @type field :: {:field, Span.t(), atom(), type_expr()}
 @type module_path :: [atom()]
@@ -58,6 +58,7 @@ Defines the surface AST node types. All nodes are tagged tuples carrying `Pentim
   | {:lit, Span.t(), literal()}
   | {:app, Span.t(), expr(), [expr()]}
   | {:fn, Span.t(), [param()], expr()}
+    # multi-param lambdas are curried at parse time into nested single-param fns
   | {:let, Span.t(), atom(), expr(), expr()}
   | {:case, Span.t(), expr(), [branch()]}
   | {:if, Span.t(), expr(), expr(), expr()}

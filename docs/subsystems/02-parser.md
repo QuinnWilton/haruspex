@@ -14,8 +14,8 @@ Recursive descent parser that consumes a token stream and produces a surface AST
 
 ```elixir
 @type parse_state :: %{
-  tokens: [Tokenizer.token()],
-  pos: non_neg_integer(),
+  tokens: tuple(),
+  pos: integer(),
   errors: [parse_error()]
 }
 
@@ -38,11 +38,14 @@ Recursive descent parser that consumes a token stream and produces a surface AST
 
 ```
 program     = toplevel*
-toplevel    = total_attr? def_decl | type_decl
-total_attr  = "@" "total"
+toplevel    = annotation? def_decl | type_decl | record_decl | implicit_decl
+annotation  = "@" ident                              # @total, @extern, @private
+implicit_decl = "@" "implicit" implicit_param         # parsed as @ + ident "implicit"
 def_decl    = "def" ident params? (":" type_expr)? "do" expr "end"
-type_decl   = "type" upper_ident type_params? "do" constructor+ "end"
-constructor = atom_lit | ident "(" type_expr ("," type_expr)* ")"
+type_decl   = "type" upper_ident type_params? "|" constructor ("|" constructor)*
+constructor = ident ("(" type_expr ("," type_expr)* ")")? (":" type_expr)?
+record_decl = "record" upper_ident params? ":" field ("," field)*
+field       = ident ":" type_expr
 params      = "(" param ("," param)* ")"
 param       = implicit_param | explicit_param
 implicit_param = "{" multiplicity? ident ":" type_expr "}"
@@ -58,7 +61,7 @@ expr        = pratt_expr
 pratt_expr  = prefix (infix)*        # Pratt parsing with precedence
 prefix      = unary | primary
 primary     = var | lit | "(" expr ")" | fn_expr | case_expr | let_expr | if_expr | hole
-fn_expr     = "fn" params "->" expr
+fn_expr     = "fn" params "->" expr "end"   # multi-param lambdas auto-curry
 case_expr   = "case" expr "do" branch+ "end"
 let_expr    = "let" pattern "=" expr newline expr
 if_expr     = "if" expr "do" expr "else" expr "end"
@@ -85,16 +88,17 @@ lit         = int | float | string | atom_lit | true | false
 
 ## Error recovery
 
-- On parse error in a definition body, skip tokens until `end`/`def`/`type` keyword
-- On parse error in expression, skip to next newline or closing delimiter
-- Collect multiple errors where possible (don't fail on first error)
+- **Not yet implemented.** The parser reports a single error and stops.
+- Future work: on parse error in a definition body, skip tokens until `end`/`def`/`type` keyword; on parse error in expression, skip to next newline or closing delimiter; collect multiple errors.
 
 ## Implementation notes
 
-- Parser state is a struct with token list, current position, and accumulated errors
+- Parser state is a map with token tuple (for O(1) access), current position integer, and accumulated errors
 - Peek/advance pattern for token consumption
 - Spans composed by merging first and last token spans: `Pentiment.Span.Byte.merge(start_span, end_span)`
 - Function application is syntactic: `f(x, y)` — no implicit currying at the surface level
+- Constructors are bare identifiers (`none`, `some`), not atoms (`:none`, `:some`)
+- Type parameters require kind annotations: `type List(a : Type)` not `type List(a)`
 
 ## Testing strategy
 

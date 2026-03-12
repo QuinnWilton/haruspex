@@ -12,12 +12,12 @@ Implement a NimbleParsec tokenizer that converts source text to a stream of toke
 
 ### Token types
 
-All 29 token tags from the subsystem doc:
+All token tags from the subsystem doc:
 
-- Keywords: `def`, `do`, `end`, `fn`, `case`, `if`, `else`, `type`, `import`, `mutual`, `variable`, `class`, `instance`, `with`, `record`, `where`
+- Keywords: `def`, `do`, `end`, `fn`, `case`, `if`, `else`, `type`, `import`, `mutual`, `let`, `class`, `instance`, `with`, `record`, `where`
 - Literals: `:int`, `:float`, `:string`, `:atom_lit`, `:true`, `:false`
 - Identifiers: `:ident`, `:upper_ident` (type/module names)
-- Operators: `:plus`, `:minus`, `:star`, `:slash`, `:eq_eq`, `:bang_eq`, `:lt`, `:gt`, `:lte`, `:gte`, `:arrow`, `:fat_arrow`, `:pipe`, `:dot`, `:colon`
+- Operators: `:plus`, `:minus`, `:star`, `:slash`, `:eq_eq`, `:bang_eq`, `:lt`, `:gt`, `:lte`, `:gte`, `:arrow`, `:fat_arrow`, `:pipe`, `:bar`, `:dot`, `:colon`
 - Delimiters: `:lparen`, `:rparen`, `:lbrace`, `:rbrace`, `:lbracket`, `:rbracket`, `:comma`
 - Structure: `:newline`, `:at` (for annotations like `@total`, `@extern`, `@private`)
 - Special: `:underscore` (holes/wildcards)
