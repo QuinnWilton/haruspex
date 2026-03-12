@@ -2,3 +2,4 @@
 /deps/
 /cover/
 /priv/plts/
+erl_crash.dump

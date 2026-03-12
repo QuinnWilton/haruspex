@@ -1,0 +1,251 @@
+<!-- playbill:{"version":"0.1.0"} -->
+
+# Tier 2: Bidirectional Type Checking
+
+```elixir
+Mix.install([
+  {:haruspex, path: "../.."},
+  {:pentiment, path: "../../../pentiment"}
+])
+```
+
+This notebook demonstrates the tier-2 implementation of haruspex's type system:
+**elaboration**, **unification**, **bidirectional type checking**, **pretty-printing**,
+and **error rendering**. These components together transform surface AST into
+fully-typed core terms with solved metavariables and universe levels.
+
+## Setup
+
+```elixir
+alias Haruspex.{Core, Context, Elaborate, Check, Eval, Quote, Pretty, Value, Unify, Errors}
+alias Haruspex.Unify.{MetaState, LevelSolver}
+alias Haruspex.Mutual
+alias Pentiment.Span.Byte, as: Span
+:ok
+```
+
+## Elaboration
+
+The elaborator transforms surface AST (with names) into core terms (with de Bruijn indices).
+It resolves names, desugars operators, creates metavariables for holes, and builds
+Pi types from parameter lists.
+
+### Name resolution and builtins
+
+```elixir
+ctx = Elaborate.new()
+s = Span.new(0, 1)
+
+# Builtins resolve directly.
+{:ok, int_core, _} = Elaborate.elaborate(ctx, {:var, s, :Int})
+IO.puts("Int → #{inspect(int_core)}")
+
+# Bound variables get de Bruijn indices.
+ctx2 = %{ctx | names: [{:y, 1}, {:x, 0}], name_list: [:x, :y], level: 2}
+{:ok, x_core, _} = Elaborate.elaborate(ctx2, {:var, s, :x})
+{:ok, y_core, _} = Elaborate.elaborate(ctx2, {:var, s, :y})
+IO.puts("x → #{inspect(x_core)}  (index 1, y is closer)")
+IO.puts("y → #{inspect(y_core)}  (index 0, most recent)")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Int → {:builtin, :Int}
+x → {:var, 1}  (index 1, y is closer)
+y → {:var, 0}  (index 0, most recent)
+```
+
+### Operator desugaring and definition elaboration
+
+```elixir
+s = Span.new(0, 1)
+
+# x + y → App(App(Builtin(:add), x), y)
+ast = {:binop, s, :add, {:lit, s, 1}, {:lit, s, 2}}
+{:ok, core, _} = Elaborate.elaborate(Elaborate.new(), ast)
+IO.inspect(core, label: "1 + 2")
+
+# def add(x : Int, y : Int) : Int do x + y end
+sig = {:sig, s, :add, s,
+  [{:param, s, {:x, :omega, false}, {:var, s, :Int}},
+   {:param, s, {:y, :omega, false}, {:var, s, :Int}}],
+  {:var, s, :Int},
+  %{total: false, private: false, extern: nil}}
+body = {:binop, s, :add, {:var, s, :x}, {:var, s, :y}}
+{:ok, {:add, type_core, body_core}, _} = Elaborate.elaborate_def(Elaborate.new(), {:def, s, sig, body})
+IO.puts("\ndef add(x : Int, y : Int) : Int do x + y end")
+IO.puts("  type: #{inspect(type_core)}")
+IO.puts("  body: #{inspect(body_core)}")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+1 + 2: {:app, {:app, {:builtin, :add}, {:lit, 1}}, {:lit, 2}}
+
+def add(x : Int, y : Int) : Int do x + y end
+  type: {:pi, :omega, {:builtin, :Int}, {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}}
+  body: {:lam, :omega, {:lam, :omega, {:app, {:app, {:builtin, :add}, {:var, 1}}, {:var, 0}}}}
+```
+
+## Unification
+
+Pattern unification solves metavariables. When the checker encounters an implicit
+argument, it creates a fresh meta. Unification discovers what that meta must be.
+
+```elixir
+ms = MetaState.new()
+
+# Same types unify.
+{:ok, _} = Unify.unify(ms, 0, {:vbuiltin, :Int}, {:vbuiltin, :Int})
+IO.puts("Int = Int ✓")
+
+# Different types fail.
+{:error, _} = Unify.unify(ms, 0, {:vbuiltin, :Int}, {:vbuiltin, :Float})
+IO.puts("Int ≠ Float ✗")
+
+# Meta solving: ?a = Int.
+{id, ms} = MetaState.fresh_meta(ms, {:vtype, {:llit, 0}}, 0, :implicit)
+meta_val = {:vneutral, {:vtype, {:llit, 0}}, {:nmeta, id}}
+{:ok, ms} = Unify.unify(ms, 0, meta_val, {:vbuiltin, :Int})
+{:solved, solution} = MetaState.lookup(ms, id)
+IO.puts("?#{id} solved to: #{Pretty.pretty(solution, [], 0)}")
+
+# Level constraints from universe unification.
+ms2 = MetaState.new()
+{:ok, ms2} = Unify.unify(ms2, 0, {:vtype, {:lvar, 0}}, {:vtype, {:llit, 0}})
+IO.puts("Level constraint: #{inspect(ms2.level_constraints)}")
+{:ok, solved} = LevelSolver.solve(ms2.level_constraints)
+IO.puts("Solved levels: #{inspect(solved)}")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Int = Int ✓
+Int ≠ Float ✗
+?0 solved to: Int
+Level constraint: [{:eq, {:lvar, 0}, {:llit, 0}}]
+Solved levels: %{0 => 0}
+```
+
+## Bidirectional Type Checking
+
+The checker has two modes: **synth** (infer) and **check** (verify). Synth handles
+variables, literals, applications, projections, and builtins. Check handles lambdas
+against Pi types and pairs against Sigma types, with a synth+unify fallback.
+
+```elixir
+ctx = Check.new()
+
+# Synth: literals, builtins, universes.
+{:ok, _, t, _} = Check.synth(ctx, {:lit, 42})
+IO.puts("synth 42       : #{Pretty.pretty(t, [], 0)}")
+{:ok, _, t, _} = Check.synth(ctx, {:builtin, :Int})
+IO.puts("synth Int      : #{Pretty.pretty(t, [], 0)}")
+{:ok, _, t, _} = Check.synth(ctx, {:builtin, :add})
+IO.puts("synth add      : #{Pretty.pretty(t, [], 0)}")
+{:ok, _, t, _} = Check.synth(ctx, {:type, {:llit, 0}})
+IO.puts("synth Type 0   : #{Pretty.pretty(t, [], 0)}")
+
+# Check: lambda against Pi.
+pi = {:vpi, :omega, {:vbuiltin, :Int}, [], {:builtin, :Int}}
+{:ok, term, _} = Check.check(ctx, {:lam, :omega, {:var, 0}}, pi)
+IO.puts("\ncheck (λx.x) : Int → Int  ✓  #{inspect(term)}")
+
+# Check: type mismatch.
+{:error, {:type_mismatch, exp, got}} = Check.check(ctx, {:lit, 42}, {:vbuiltin, :Float})
+IO.puts("check 42 : Float  ✗  expected #{Pretty.pretty(exp, [], 0)}, got #{Pretty.pretty(got, [], 0)}")
+
+# Multiplicity: erased binding used computationally.
+pi0 = {:vpi, :zero, {:vbuiltin, :Int}, [], {:builtin, :Int}}
+{:error, {:multiplicity_violation, _, :zero, 1}} = Check.check(ctx, {:lam, :zero, {:var, 0}}, pi0)
+IO.puts("check (λ0 x.x) : {Int} → Int  ✗  (erased var used)")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+synth 42       : Int
+synth Int      : Type
+synth add      : Int -> Int -> Int
+synth Type 0   : Type (succ 0)
+
+check (λx.x) : Int → Int  ✓  {:lam, :omega, {:var, 0}}
+check 42 : Float  ✗  expected Float, got Int
+check (λ0 x.x) : {Int} → Int  ✗  (erased var used)
+```
+
+## End-to-End: Elaborate → Check → Error
+
+The full pipeline: elaborate a surface definition, type-check it, render errors with pentiment.
+
+```elixir
+s = Span.new(0, 1)
+
+# ── Success ──
+IO.puts("═══ def add(x : Int, y : Int) : Int do x + y end ═══")
+sig = {:sig, s, :add, s,
+  [{:param, s, {:x, :omega, false}, {:var, s, :Int}},
+   {:param, s, {:y, :omega, false}, {:var, s, :Int}}],
+  {:var, s, :Int}, %{total: false, private: false, extern: nil}}
+body = {:binop, s, :add, {:var, s, :x}, {:var, s, :y}}
+{:ok, {:add, type_core, body_core}, elab_ctx} =
+  Elaborate.elaborate_def(Elaborate.new(), {:def, s, sig, body})
+check_ctx = Check.from_meta_state(elab_ctx.meta_state)
+{:ok, zonked, _} = Check.check_definition(check_ctx, :add, type_core, body_core)
+IO.puts("  ✓ type checks!")
+IO.puts("  zonked: #{inspect(zonked)}\n")
+
+# ── Failure ──
+IO.puts("═══ def bad(x : Int) : Float do x end ═══")
+bad_sig = {:sig, s, :bad, s,
+  [{:param, s, {:x, :omega, false}, {:var, s, :Int}}],
+  {:var, s, :Float}, %{total: false, private: false, extern: nil}}
+{:ok, {:bad, bad_type, bad_body}, elab_ctx2} =
+  Elaborate.elaborate_def(Elaborate.new(), {:def, s, bad_sig, {:var, s, :x}})
+check_ctx2 = Check.from_meta_state(elab_ctx2.meta_state)
+{:error, err} = Check.check_definition(check_ctx2, :bad, bad_type, bad_body)
+opts = %{names: [:bad, :x], level: 2, span: s, source: "example.hx"}
+report = Errors.render(err, opts)
+IO.puts("  " <> Errors.format_compact(report))
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+═══ def add(x : Int, y : Int) : Int do x + y end ═══
+  ✓ type checks!
+  zonked: {:lam, :omega, {:lam, :omega, {:app, {:app, {:builtin, :add}, {:var, 1}}, {:var, 0}}}}
+
+═══ def bad(x : Int) : Float do x end ═══
+  [E001] type mismatch (example.hx:byte 0)
+```
+
+## Architecture
+
+```elixir
+Kino.Mermaid.new("""
+graph TD
+    AST[Surface AST] --> ELAB[Elaborate]
+    ELAB --> CORE[Core Terms]
+    ELAB --> MS[MetaState]
+    CORE --> CHECK[Check]
+    CHECK --> SYNTH{synth}
+    CHECK --> CHECKM{check}
+    SYNTH --> EVAL[Eval + Quote]
+    CHECKM --> EVAL
+    SYNTH --> UNIFY[Unify]
+    CHECKM --> UNIFY
+    UNIFY --> MS
+    CHECK --> ZONK[Zonk]
+    MS --> ZONK
+    ZONK --> DONE[Zonked Core]
+    CHECK --> ERR[Errors]
+    ERR --> PENTIMENT[Pentiment Report]
+    MS --> LEVEL[LevelSolver]
+    CHECK --> PRETTY[Pretty]
+    ERR --> PRETTY
+""")
+```
