@@ -36,6 +36,7 @@ defmodule Haruspex.Value do
           | {:nsnd, neutral()}
           | {:nmeta, Core.meta_id()}
           | {:ndef, atom(), [value()]}
+          | {:nbuiltin, atom()}
 
   # ============================================================================
   # Constructors
