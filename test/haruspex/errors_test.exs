@@ -331,4 +331,30 @@ defmodule Haruspex.ErrorsTest do
       assert report.labels == []
     end
   end
+
+  # ============================================================================
+  # Formatting
+  # ============================================================================
+
+  describe "format_compact" do
+    test "produces a single-line string" do
+      report =
+        Errors.render({:type_mismatch, {:vbuiltin, :Int}, {:vbuiltin, :Float}}, default_opts())
+
+      formatted = Errors.format_compact(report)
+
+      assert is_binary(formatted)
+      assert String.contains?(formatted, "E001")
+      assert String.contains?(formatted, "type mismatch")
+    end
+
+    test "hole report formats compactly" do
+      hole = %{span: nil, expected_type: "Int", bindings: []}
+      report = Errors.render_hole(hole)
+      formatted = Errors.format_compact(report)
+
+      assert is_binary(formatted)
+      assert String.contains?(formatted, "I001")
+    end
+  end
 end

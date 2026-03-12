@@ -497,6 +497,20 @@ defmodule Haruspex.Unify do
     if n1 == n2, do: {:ok, ms}, else: {:error, {:mismatch, {:nbuiltin, n1}, {:nbuiltin, n2}}}
   end
 
+  defp unify_neutral(ms, lvl, {:ndef, name1, args1}, {:ndef, name2, args2}) do
+    if name1 == name2 and length(args1) == length(args2) do
+      Enum.zip(args1, args2)
+      |> Enum.reduce_while({:ok, ms}, fn {a1, a2}, {:ok, ms_acc} ->
+        case unify(ms_acc, lvl, a1, a2) do
+          {:ok, _} = ok -> {:cont, ok}
+          err -> {:halt, err}
+        end
+      end)
+    else
+      {:error, {:mismatch, {:ndef, name1, args1}, {:ndef, name2, args2}}}
+    end
+  end
+
   defp unify_neutral(_ms, _lvl, ne1, ne2) do
     {:error, {:mismatch, ne1, ne2}}
   end

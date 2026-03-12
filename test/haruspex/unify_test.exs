@@ -424,6 +424,36 @@ defmodule Haruspex.UnifyTest do
 
       assert {:error, _} = Unify.unify(ms, 1, app1, app2)
     end
+
+    test "same ndef neutrals with same args unify" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      ne1 = {:vneutral, int, {:ndef, :foo, [{:vlit, 1}, {:vlit, 2}]}}
+      ne2 = {:vneutral, int, {:ndef, :foo, [{:vlit, 1}, {:vlit, 2}]}}
+
+      assert {:ok, _ms} = Unify.unify(ms, 0, ne1, ne2)
+    end
+
+    test "ndef neutrals with different names fail" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      ne1 = {:vneutral, int, {:ndef, :foo, [{:vlit, 1}]}}
+      ne2 = {:vneutral, int, {:ndef, :bar, [{:vlit, 1}]}}
+
+      assert {:error, _} = Unify.unify(ms, 0, ne1, ne2)
+    end
+
+    test "ndef neutrals with different args fail" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      ne1 = {:vneutral, int, {:ndef, :foo, [{:vlit, 1}]}}
+      ne2 = {:vneutral, int, {:ndef, :foo, [{:vlit, 2}]}}
+
+      assert {:error, _} = Unify.unify(ms, 0, ne1, ne2)
+    end
   end
 
   # ============================================================================

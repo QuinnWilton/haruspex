@@ -432,6 +432,76 @@ defmodule Haruspex.CheckTest do
   end
 
   # ============================================================================
+  # Integration tests (from spec)
+  # ============================================================================
+
+  describe "integration — end-to-end definition checking" do
+    test "addition: Pi(omega, Int, Pi(omega, Int, Int)) body = add x y" do
+      # type: Int -> Int -> Int
+      # body: lam(omega, lam(omega, app(app(builtin(:add), var(1)), var(0))))
+      type_term =
+        {:pi, :omega, {:builtin, :Int}, {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}}
+
+      body_term =
+        {:lam, :omega, {:lam, :omega, {:app, {:app, {:builtin, :add}, {:var, 1}}, {:var, 0}}}}
+
+      assert {:ok, checked, _ctx} =
+               Check.check_definition(Check.new(), :add, type_term, body_term)
+
+      # Body should be unchanged (no metas to zonk).
+      assert {:lam, :omega, {:lam, :omega, {:app, {:app, {:builtin, :add}, _}, _}}} = checked
+    end
+
+    test "type error: body type doesn't match declared type" do
+      # def bad(x : Int) : Float do x end
+      type_term = {:pi, :omega, {:builtin, :Int}, {:builtin, :Float}}
+      body_term = {:lam, :omega, {:var, 0}}
+
+      assert {:error, {:type_mismatch, {:vbuiltin, :Float}, {:vbuiltin, :Int}}} =
+               Check.check_definition(Check.new(), :bad, type_term, body_term)
+    end
+
+    test "hole: body with meta produces hole report" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :hole)
+      ctx = Check.from_meta_state(ms)
+
+      type_term = {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}
+      body_term = {:lam, :omega, {:meta, id}}
+
+      assert {:ok, _checked, ctx} =
+               Check.check_definition(ctx, :f, type_term, body_term)
+
+      assert [%{expected_type: "Int"}] = ctx.hole_reports
+    end
+
+    test "nested application checks correctly" do
+      # def apply_twice(f : Int -> Int, x : Int) : Int do f(f(x)) end
+      int_to_int = {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}
+      type_term = {:pi, :omega, int_to_int, {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}}
+
+      # In context: apply_twice at ix 2, f at ix 1, x at ix 0
+      # f(f(x)) = app(var(1), app(var(1), var(0)))
+      body_term =
+        {:lam, :omega, {:lam, :omega, {:app, {:var, 1}, {:app, {:var, 1}, {:var, 0}}}}}
+
+      assert {:ok, _checked, _ctx} =
+               Check.check_definition(Check.new(), :apply_twice, type_term, body_term)
+    end
+
+    test "constant function ignores second argument" do
+      # def const(x : Int, y : Float) : Int do x end
+      type_term =
+        {:pi, :omega, {:builtin, :Int}, {:pi, :omega, {:builtin, :Float}, {:builtin, :Int}}}
+
+      body_term = {:lam, :omega, {:lam, :omega, {:var, 1}}}
+
+      assert {:ok, {:lam, :omega, {:lam, :omega, {:var, 1}}}, _ctx} =
+               Check.check_definition(Check.new(), :const, type_term, body_term)
+    end
+  end
+
+  # ============================================================================
   # Property tests
   # ============================================================================
 

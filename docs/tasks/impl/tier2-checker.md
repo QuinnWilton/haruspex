@@ -131,6 +131,24 @@ of the function to determine implicit positions.
 - Type error: `def bad(x : Int) : String do x end` → mismatch error with readable message
 - Hole: `def f(x : Int) : Int do _ end` → hole report showing `expected: Int, bindings: [x : Int]`
 
+## Deferred to tier 3
+
+### Source spans on checker errors
+All checker error tuples currently omit source spans (e.g., `{:type_mismatch, expected, got}`
+rather than `{:type_mismatch, expected, got, span}`). Spans are provided externally via
+`render_opts` at error rendering time. To support richer error messages, consider threading
+spans through the checker to attach them at the point of error.
+
+### Computational vs non-computational position tracking
+The spec calls for distinguishing computational and type-level positions for multiplicity
+checking (`:zero` bindings should be usable in type positions but not computational ones).
+Currently all variable uses are treated uniformly. This requires tracking a "position mode"
+through the checker.
+
+### Ann and Extern synth rules
+`Ann(e, ty)` (type annotation as a core term) and `Extern(mod, fun, arity)` synth rules
+are not yet implemented. These are needed when the core language includes these constructs.
+
 ## Verification
 
 ```bash

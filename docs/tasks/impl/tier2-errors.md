@@ -64,6 +64,19 @@ Implement error rendering using pentiment spans for source context display.
 
 - End-to-end: ill-typed program → parse → elaborate → check → render error → readable output
 
+## Deferred to tier 3
+
+### Raw unification error rendering
+The errors module does not yet render raw unification errors (`{:mismatch, ...}`,
+`{:occurs_check, ...}`, `{:scope_escape, ...}`, `{:not_pattern, ...}`). These are
+currently wrapped into `{:type_mismatch, ...}` by the checker's fallback path. When
+richer error messages are needed, add dedicated render clauses.
+
+### Rich format with source context
+`Errors.format/2` delegates to `Pentiment.format/3` which requires a source argument.
+End-to-end formatting with source line display and span underlines is deferred to when
+the pipeline provides source text alongside errors.
+
 ## Verification
 
 ```bash

@@ -215,6 +215,29 @@ defmodule Haruspex.Errors do
   end
 
   # ============================================================================
+  # Formatting
+  # ============================================================================
+
+  @doc """
+  Format a `Pentiment.Report` as a compact single-line string.
+  """
+  @spec format_compact(Report.t()) :: String.t()
+  def format_compact(%Report{} = report) do
+    Pentiment.format_compact(report)
+  end
+
+  @doc """
+  Format a `Pentiment.Report` with source context for rich terminal output.
+
+  The `source` should be either a `Pentiment.Source` struct or the raw source
+  text string.
+  """
+  @spec format(Report.t(), String.t() | Pentiment.Source.t()) :: String.t()
+  def format(%Report{} = report, source) do
+    Pentiment.format(report, source)
+  end
+
+  # ============================================================================
   # Helpers
   # ============================================================================
 

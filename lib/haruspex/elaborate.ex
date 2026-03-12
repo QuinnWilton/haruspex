@@ -302,7 +302,7 @@ defmodule Haruspex.Elaborate do
       end)
       |> Enum.map(fn {var_name, var_span} ->
         type = Map.fetch!(ctx.auto_implicits, var_name)
-        {:param, var_span, {var_name, :omega, true}, type}
+        {:param, var_span, {var_name, :zero, true}, type}
       end)
 
     new_params = implicit_params ++ params
