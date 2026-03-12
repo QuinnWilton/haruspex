@@ -208,10 +208,9 @@ defmodule Haruspex.ASTTest do
       assert AST.span({:constructor, @s, :None, [], nil}) == @s
     end
 
-    test "constructor with fields and return type" do
-      field = {:field, @s2, :value, {:var, @s2, :a}}
+    test "constructor with args and return type" do
       ret = {:app, @s2, {:var, @s2, :Option}, [{:var, @s2, :a}]}
-      assert AST.span({:constructor, @s, :Some, [field], ret}) == @s
+      assert AST.span({:constructor, @s, :Some, [{:var, @s2, :a}], ret}) == @s
     end
 
     test "field" do

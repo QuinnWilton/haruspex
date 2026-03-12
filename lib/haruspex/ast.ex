@@ -41,7 +41,7 @@ defmodule Haruspex.AST do
       {:def, span, signature, body}
       {:type_decl, span, name, [type_param], [constructor]}
       {:import, span, module_path, open_option}
-      {:variable_decl, span, [param]}
+      {:implicit_decl, span, [param]}
       {:mutual, span, [toplevel]}
       {:class_decl, span, name, [param], [constraint], [method_sig]}
       {:instance_decl, span, class_name, [type_arg], [constraint], [method_impl]}
@@ -152,7 +152,7 @@ defmodule Haruspex.AST do
           {:def, span(), signature(), expr()}
           | {:type_decl, span(), atom(), [type_param()], [constructor()]}
           | {:import, span(), module_path(), open_option()}
-          | {:variable_decl, span(), [param()]}
+          | {:implicit_decl, span(), [param()]}
           | {:mutual, span(), [toplevel()]}
           | {:class_decl, span(), atom(), [param()], [constraint()], [method_sig()]}
           | {:instance_decl, span(), atom(), [type_expr()], [constraint()], [method_impl()]}
@@ -161,10 +161,10 @@ defmodule Haruspex.AST do
   @type program :: [toplevel()]
 
   @typedoc "Type parameter with optional kind annotation."
-  @type type_param :: {atom(), type_expr() | nil}
+  @type type_param :: {atom(), type_expr()}
 
-  @typedoc "ADT constructor, with optional return type for GADTs."
-  @type constructor :: {:constructor, span(), atom(), [field()], type_expr() | nil}
+  @typedoc "ADT constructor with positional type args, optional return type for GADTs."
+  @type constructor :: {:constructor, span(), atom(), [type_expr()], type_expr() | nil}
 
   @typedoc "Named field in a constructor or record."
   @type field :: {:field, span(), atom(), type_expr()}

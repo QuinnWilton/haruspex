@@ -12,7 +12,7 @@ defmodule Haruspex.MixProject do
       deps: deps(),
       test_coverage: [
         threshold: 95,
-        ignore_modules: [Haruspex.MixProject]
+        ignore_modules: [Haruspex.MixProject, Haruspex]
       ],
       roux: [
         languages: [Haruspex],
