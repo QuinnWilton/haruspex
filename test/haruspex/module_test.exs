@@ -332,6 +332,108 @@ defmodule Haruspex.ModuleTest do
   end
 
   # ============================================================================
+  # Cross-module with implicit (erased) params
+  # ============================================================================
+
+  describe "cross-module erased params" do
+    test "imported function with erased param skips zero-multiplicity in arity" do
+      db = new_db()
+
+      # Module A: function with one erased param and one runtime param.
+      set_source(db, "lib/poly.hx", """
+      def wrap(0 a : Type, x : Int) : Int do x end
+      """)
+
+      # Elaborate A to populate its type.
+      {:ok, {type_core, _}} =
+        Roux.Runtime.query(db, :haruspex_elaborate, {"lib/poly.hx", :wrap})
+
+      # Type should be Pi(:zero, Type, Pi(:omega, Int, Int)).
+      assert {:pi, :zero, {:type, _}, {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}} =
+               type_core
+
+      # When B imports wrap, the global should have arity 1 (only omega params).
+      set_source(db, "lib/user.hx", """
+      import Poly, open: true
+      def use_wrap(x : Int) : Int do wrap(x) end
+      """)
+
+      {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/poly.hx")
+
+      # Elaborate B to check the global reference has correct arity.
+      {:ok, {_type, body}} =
+        Roux.Runtime.query(db, :haruspex_elaborate, {"lib/user.hx", :use_wrap})
+
+      # The body should contain {:global, Poly, :wrap, 1} — arity 1, not 2.
+      assert {:lam, :omega, {:app, {:global, Poly, :wrap, 1}, {:var, 0}}} = body
+    after
+      purge_module(Poly)
+    end
+  end
+
+  # ============================================================================
+  # Standalone elaboration (no db)
+  # ============================================================================
+
+  describe "standalone elaboration" do
+    test "qualified access without db returns unsupported error" do
+      ctx = Haruspex.Elaborate.new()
+      s = Pentiment.Span.Byte.new(0, 1)
+
+      # Simulate qualified access: Module.name
+      result = Haruspex.Elaborate.elaborate(ctx, {:dot, s, {:var, s, :SomeModule}, :func})
+
+      assert {:error, {:unsupported, :qualified_access, _}} = result
+    end
+  end
+
+  # ============================================================================
+  # Empty source_roots
+  # ============================================================================
+
+  describe "empty source_roots" do
+    test "cross-module resolution works with bare URIs" do
+      db = Roux.Database.new()
+      Roux.Lang.register(db, Haruspex)
+
+      # Use bare URIs (no lib/ prefix) with empty source_roots.
+      Roux.Input.set(db, :source_text, "math_a.hx", """
+      def inc(x : Int) : Int do x + 1 end
+      """)
+
+      Roux.Input.set(db, :source_text, "math_b.hx", """
+      import MathA, open: true
+      def double_inc(x : Int) : Int do inc(inc(x)) end
+      """)
+
+      # Parse and elaborate A first.
+      {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "math_a.hx")
+
+      # Elaborate B with empty source_roots so module_path_to_uri
+      # returns "math_a.hx" instead of "lib/math_a.hx".
+      {:ok, entity_ids} = Roux.Runtime.query(db, :haruspex_parse, "math_b.hx")
+      imports = Roux.Runtime.query(db, :haruspex_file_imports, "math_b.hx")
+
+      entity_id =
+        Enum.find(entity_ids, fn id ->
+          Roux.Runtime.field(db, Haruspex.Definition, id, :name) == :double_inc
+        end)
+
+      def_ast = Roux.Runtime.field(db, Haruspex.Definition, entity_id, :surface_ast)
+
+      ctx =
+        Haruspex.Elaborate.new(
+          db: db,
+          uri: "math_b.hx",
+          imports: imports,
+          source_roots: []
+        )
+
+      {:ok, {_name, _type, _body}, _ctx} = Haruspex.Elaborate.elaborate_def(ctx, def_ast)
+    end
+  end
+
+  # ============================================================================
   # Diagnostics
   # ============================================================================
 

@@ -427,10 +427,7 @@ defmodule Haruspex.Elaborate do
   defp name_visible_in_import?(%{open: nil}, _name), do: false
 
   # Resolve a name from an imported module by querying its definitions.
-  @spec resolve_from_module(t(), [atom()] | {:erlang_mod, atom()}, atom()) ::
-          {:ok, Core.expr()} | :error
-  defp resolve_from_module(_ctx, {:erlang_mod, _}, _name), do: :error
-
+  @spec resolve_from_module(t(), [atom()], atom()) :: {:ok, Core.expr()} | :error
   defp resolve_from_module(ctx, module_path, name) do
     uri = module_path_to_uri(module_path, ctx.source_roots)
 
