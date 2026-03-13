@@ -227,6 +227,111 @@ defmodule Haruspex.ModuleTest do
   end
 
   # ============================================================================
+  # Partial application / global as value
+  # ============================================================================
+
+  describe "global function references" do
+    test "imported function used as partial application" do
+      db = new_db()
+
+      set_source(db, "lib/math_a.hx", """
+      def add(x : Int, y : Int) : Int do x + y end
+      """)
+
+      set_source(db, "lib/math_b.hx", """
+      import MathA, open: true
+      def add5(x : Int) : Int do add(x, 5) end
+      """)
+
+      {:ok, _mod_a} = Roux.Runtime.query(db, :haruspex_compile, "lib/math_a.hx")
+      {:ok, mod_b} = Roux.Runtime.query(db, :haruspex_compile, "lib/math_b.hx")
+
+      assert mod_b.add5(3) == 8
+    after
+      purge_module(MathA)
+      purge_module(MathB)
+    end
+  end
+
+  # ============================================================================
+  # Selective open imports
+  # ============================================================================
+
+  describe "selective open imports" do
+    test "non-listed name is not accessible via selective open" do
+      db = new_db()
+
+      set_source(db, "lib/math_a.hx", """
+      def inc(x : Int) : Int do x + 1 end
+      def dec(x : Int) : Int do x - 1 end
+      """)
+
+      set_source(db, "lib/math_b.hx", """
+      import MathA, open: [inc]
+      def try_dec(x : Int) : Int do dec(x) end
+      """)
+
+      {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/math_a.hx")
+      result = Roux.Runtime.query(db, :haruspex_elaborate, {"lib/math_b.hx", :try_dec})
+
+      assert {:error, {:unbound_variable, :dec, _}} = result
+    after
+      purge_module(MathA)
+    end
+
+    test "listed name is accessible via selective open" do
+      db = new_db()
+
+      set_source(db, "lib/math_a.hx", """
+      def inc(x : Int) : Int do x + 1 end
+      def dec(x : Int) : Int do x - 1 end
+      """)
+
+      set_source(db, "lib/math_b.hx", """
+      import MathA, open: [dec]
+      def step_back(x : Int) : Int do dec(x) end
+      """)
+
+      {:ok, _mod_a} = Roux.Runtime.query(db, :haruspex_compile, "lib/math_a.hx")
+      {:ok, mod_b} = Roux.Runtime.query(db, :haruspex_compile, "lib/math_b.hx")
+
+      assert mod_b.step_back(10) == 9
+    after
+      purge_module(MathA)
+      purge_module(MathB)
+    end
+  end
+
+  # ============================================================================
+  # @no_prelude with modules
+  # ============================================================================
+
+  describe "@no_prelude with modules" do
+    test "file with @no_prelude can still use qualified imports" do
+      db = new_db()
+
+      set_source(db, "lib/math_a.hx", """
+      def inc(x : Int) : Int do x + 1 end
+      """)
+
+      # Module B uses @no_prelude but can still access imported defs.
+      # It needs Int from somewhere — it won't have it from prelude.
+      # So this should fail because Int is not available.
+      set_source(db, "lib/math_b.hx", """
+      @no_prelude
+      import MathA
+      def f(x : Int) : Int do MathA.inc(x) end
+      """)
+
+      {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/math_a.hx")
+      result = Roux.Runtime.query(db, :haruspex_elaborate, {"lib/math_b.hx", :f})
+
+      # Int is not available without prelude.
+      assert {:error, {:unbound_variable, :Int, _}} = result
+    end
+  end
+
+  # ============================================================================
   # Diagnostics
   # ============================================================================
 
@@ -237,6 +342,17 @@ defmodule Haruspex.ModuleTest do
       set_source(db, "lib/orphan.hx", """
       import Unknown
       def f(x : Int) : Int do Unknown.add(x, x) end
+      """)
+
+      result = Roux.Runtime.query(db, :haruspex_elaborate, {"lib/orphan.hx", :f})
+      assert {:error, _} = result
+    end
+
+    test "qualified access without import produces error" do
+      db = new_db()
+
+      set_source(db, "lib/orphan.hx", """
+      def f(x : Int) : Int do NoSuchModule.add(x, x) end
       """)
 
       result = Roux.Runtime.query(db, :haruspex_elaborate, {"lib/orphan.hx", :f})
