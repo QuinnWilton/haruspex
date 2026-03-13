@@ -369,6 +369,27 @@ defmodule Haruspex.ModuleTest do
     after
       purge_module(Poly)
     end
+
+    test "cross-module call with erased param compiles and runs correctly" do
+      db = new_db()
+
+      set_source(db, "lib/poly.hx", """
+      def wrap(0 a : Type, x : Int) : Int do x end
+      """)
+
+      set_source(db, "lib/user.hx", """
+      import Poly, open: true
+      def use_wrap(x : Int) : Int do wrap(x) end
+      """)
+
+      {:ok, _} = Roux.Runtime.query(db, :haruspex_compile, "lib/poly.hx")
+      {:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, "lib/user.hx")
+
+      assert mod.use_wrap(42) == 42
+    after
+      purge_module(Poly)
+      purge_module(User)
+    end
   end
 
   # ============================================================================

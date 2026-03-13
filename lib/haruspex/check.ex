@@ -202,6 +202,9 @@ defmodule Haruspex.Check do
       case Roux.Runtime.query(ctx.db, :haruspex_elaborate, {uri, name}) do
         {:ok, {type_core, _body_core}} ->
           type_val = eval_in(ctx, type_core)
+          # Strip zero-multiplicity pi prefixes — erased params are already
+          # excluded from the global's arity and won't appear at call sites.
+          type_val = strip_erased_pis(type_val)
           {:ok, term, type_val, ctx}
 
         {:error, _} = err ->
@@ -550,6 +553,16 @@ defmodule Haruspex.Check do
   defp count_runtime_params({:pi, :omega, _dom, cod}), do: 1 + count_runtime_params(cod)
   defp count_runtime_params({:pi, :zero, _dom, cod}), do: count_runtime_params(cod)
   defp count_runtime_params(_), do: 0
+
+  # Strip leading zero-multiplicity pi binders from a value type.
+  # Cross-module globals have erased params excluded from their arity,
+  # so callers never provide those arguments.
+  defp strip_erased_pis({:vpi, :zero, _dom, env, cod}) do
+    cod_val = Eval.eval(%{env: [:erased | env], metas: %{}, defs: %{}, fuel: 1000}, cod)
+    strip_erased_pis(cod_val)
+  end
+
+  defp strip_erased_pis(type), do: type
 
   # Convert a compiled module name back to a URI.
   # E.g., MathA → "lib/math_a.hx" (assumes "lib" source root).
