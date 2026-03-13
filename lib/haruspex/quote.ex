@@ -99,6 +99,11 @@ defmodule Haruspex.Quote do
     {:extern, mod, fun, arity}
   end
 
+  # Global cross-module reference (opaque).
+  def quote(_lvl, _type, {:vglobal, mod, name, arity}) do
+    {:global, mod, name, arity}
+  end
+
   # ============================================================================
   # Untyped readback
   # ============================================================================
@@ -117,6 +122,7 @@ defmodule Haruspex.Quote do
   def quote_untyped(_lvl, {:vtype, level}), do: {:type, level}
   def quote_untyped(_lvl, {:vbuiltin, name}) when is_atom(name), do: {:builtin, name}
   def quote_untyped(_lvl, {:vextern, mod, fun, arity}), do: {:extern, mod, fun, arity}
+  def quote_untyped(_lvl, {:vglobal, mod, name, arity}), do: {:global, mod, name, arity}
 
   def quote_untyped(lvl, {:vbuiltin, {name, args}}) do
     Enum.reduce(args, {:builtin, name}, fn arg, acc ->

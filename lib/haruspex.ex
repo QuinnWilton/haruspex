@@ -109,7 +109,16 @@ defmodule Haruspex do
     entity_id = find_entity(db, entity_ids, name)
     def_ast = Roux.Runtime.field(db, Definition, entity_id, :surface_ast)
 
-    ctx = Haruspex.Elaborate.new()
+    # Load imports for cross-module resolution.
+    imports = Roux.Runtime.query(db, :haruspex_file_imports, uri)
+
+    ctx =
+      Haruspex.Elaborate.new(
+        db: db,
+        uri: uri,
+        imports: imports,
+        source_roots: source_roots()
+      )
 
     case Haruspex.Elaborate.elaborate_def(ctx, def_ast) do
       {:ok, {^name, type_core, body_core}, _ctx} ->
@@ -128,7 +137,7 @@ defmodule Haruspex do
   defquery :haruspex_check, key: {uri, name} do
     {:ok, {type_core, body_core}} = Roux.Runtime.query!(db, :haruspex_elaborate, {uri, name})
 
-    ctx = Haruspex.Check.new()
+    ctx = %{Haruspex.Check.new() | db: db}
 
     case Haruspex.Check.check_definition(ctx, name, type_core, body_core) do
       {:ok, checked_body, _ctx} ->
@@ -153,7 +162,7 @@ defmodule Haruspex do
         {name, type_core, body_core}
       end)
 
-    module_name = module_name_from_uri(uri)
+    module_name = module_name_from_uri(uri, source_roots())
     ast = Haruspex.Codegen.compile_module(module_name, :all, definitions)
     {:ok, ast}
   end
@@ -214,6 +223,16 @@ defmodule Haruspex do
   defquery :haruspex_completions, key: key do
     _ = {db, key}
     []
+  end
+
+  # ============================================================================
+  # Configuration
+  # ============================================================================
+
+  @doc false
+  @spec source_roots() :: [String.t()]
+  def source_roots do
+    Application.get_env(:haruspex, :source_roots, ["lib"])
   end
 
   # ============================================================================

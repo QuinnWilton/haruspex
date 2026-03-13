@@ -124,6 +124,7 @@ defmodule Haruspex.Erase do
   defp check({:lit, v}, _type, _ctx), do: {:lit, v}
   defp check({:builtin, name}, _type, _ctx), do: {:builtin, name}
   defp check({:extern, mod, fun, arity}, _type, _ctx), do: {:extern, mod, fun, arity}
+  defp check({:global, mod, name, arity}, _type, _ctx), do: {:global, mod, name, arity}
 
   # ============================================================================
   # Synth mode: erase and return {erased_term, type}
@@ -167,6 +168,13 @@ defmodule Haruspex.Erase do
     raise Haruspex.CompilerBug,
           "cannot synthesize type of extern #{inspect(mod)}.#{fun}/#{arity} during erasure; " <>
             "externs should be erased in check mode with a known type"
+  end
+
+  # Global: synthesize an omega-only pi type from the arity.
+  # Cross-module globals have already had erased params handled at the import boundary.
+  defp synth({:global, _mod, _name, arity} = term, _ctx) do
+    type = build_omega_type(arity)
+    {term, type}
   end
 
   # Let: synthesize both parts, eliminate if type-level.
@@ -276,4 +284,12 @@ defmodule Haruspex.Erase do
 
   # Fallback for unknown builtins: treat as type.
   defp builtin_type(_name), do: {:type, {:llit, 0}}
+
+  # Build a type with N omega pi params. The exact domain/codomain types don't
+  # matter for erasure — we only need the multiplicity structure.
+  defp build_omega_type(0), do: {:type, {:llit, 0}}
+
+  defp build_omega_type(n) when n > 0 do
+    {:pi, :omega, {:type, {:llit, 0}}, build_omega_type(n - 1)}
+  end
 end

@@ -95,6 +95,10 @@ defmodule Haruspex.Eval do
     {:vextern, mod, fun, arity}
   end
 
+  def eval(_ctx, {:global, mod, name, arity}) do
+    {:vglobal, mod, name, arity}
+  end
+
   def eval(ctx, {:meta, id}) do
     case Map.get(ctx.metas, id) do
       {:solved, val} -> val
@@ -185,6 +189,11 @@ defmodule Haruspex.Eval do
   # Extern application — always stuck.
   def vapp(_ctx, {:vextern, mod, fun, arity}, arg) do
     {:vneutral, {:vtype, {:llit, 0}}, {:napp, {:ndef, {mod, fun, arity}, []}, arg}}
+  end
+
+  # Global (cross-module) application — always stuck.
+  def vapp(_ctx, {:vglobal, mod, name, arity}, arg) do
+    {:vneutral, {:vtype, {:llit, 0}}, {:napp, {:ndef, {mod, name, arity}, []}, arg}}
   end
 
   # ============================================================================

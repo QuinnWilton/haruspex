@@ -37,6 +37,7 @@ defmodule Haruspex.Core do
           | {:lit, literal()}
           | {:builtin, atom()}
           | {:extern, module(), atom(), arity()}
+          | {:global, module(), atom(), arity()}
           | {:meta, meta_id()}
           | {:inserted_meta, meta_id(), [boolean()]}
           | {:spanned, Pentiment.Span.Byte.t(), expr()}
@@ -87,6 +88,9 @@ defmodule Haruspex.Core do
 
   @spec extern(module(), atom(), arity()) :: expr()
   def extern(mod, fun, arity), do: {:extern, mod, fun, arity}
+
+  @spec global(module(), atom(), arity()) :: expr()
+  def global(mod, name, arity), do: {:global, mod, name, arity}
 
   @spec meta(meta_id()) :: expr()
   def meta(id), do: {:meta, id}
@@ -156,7 +160,7 @@ defmodule Haruspex.Core do
   def subst(:erased, _target, _replacement), do: :erased
 
   def subst(term, _target, _replacement)
-      when elem(term, 0) in [:type, :lit, :builtin, :extern, :meta, :inserted_meta] do
+      when elem(term, 0) in [:type, :lit, :builtin, :extern, :global, :meta, :inserted_meta] do
     term
   end
 
@@ -216,7 +220,7 @@ defmodule Haruspex.Core do
   def shift(:erased, _amount, _cutoff), do: :erased
 
   def shift(term, _amount, _cutoff)
-      when elem(term, 0) in [:type, :lit, :builtin, :extern, :meta, :inserted_meta] do
+      when elem(term, 0) in [:type, :lit, :builtin, :extern, :global, :meta, :inserted_meta] do
     term
   end
 end

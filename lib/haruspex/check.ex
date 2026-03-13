@@ -38,12 +38,13 @@ defmodule Haruspex.Check do
           | {:universe_error, String.t()}
 
   @enforce_keys [:context, :names, :meta_state]
-  defstruct [:context, :names, :meta_state, hole_reports: []]
+  defstruct [:context, :names, :meta_state, :db, hole_reports: []]
 
   @type t :: %__MODULE__{
           context: Context.t(),
           names: [atom()],
           meta_state: MetaState.t(),
+          db: term() | nil,
           hole_reports: [hole_report()]
         }
 
@@ -192,6 +193,26 @@ defmodule Haruspex.Check do
     {:ok, {:builtin, name}, type, ctx}
   end
 
+  # Global cross-module reference: look up the type via roux query.
+  def synth(ctx, {:global, mod, name, _arity} = term) do
+    if ctx.db do
+      # Find the URI for this module and elaborate to get the type.
+      uri = global_module_uri(mod)
+
+      case Roux.Runtime.query(ctx.db, :haruspex_elaborate, {uri, name}) do
+        {:ok, {type_core, _body_core}} ->
+          type_val = eval_in(ctx, type_core)
+          {:ok, term, type_val, ctx}
+
+        {:error, _} = err ->
+          err
+      end
+    else
+      # No DB — treat as opaque with unknown type.
+      {:ok, term, {:vtype, {:llit, 0}}, ctx}
+    end
+  end
+
   # Meta: look up type in MetaState.
   def synth(ctx, {:meta, id}) do
     case MetaState.lookup(ctx.meta_state, id) do
@@ -326,6 +347,22 @@ defmodule Haruspex.Check do
   """
   @spec check_definition(t(), atom(), Core.expr(), Core.expr()) ::
           {:ok, Core.expr(), t()} | {:error, type_error()}
+  def check_definition(ctx, name, type_term, {:global, _mod, _fun, arity} = body_term) do
+    # Global cross-module reference: trust the type, validate arity.
+    runtime_params = count_runtime_params(type_term)
+
+    if runtime_params != arity do
+      {:error, {:global_arity_mismatch, name, arity, runtime_params}}
+    else
+      type_val = eval_in(ctx, type_term)
+      _def_ctx = extend_ctx(ctx, name, type_val, :omega)
+
+      with {:ok, ctx} <- post_process(ctx) do
+        {:ok, body_term, ctx}
+      end
+    end
+  end
+
   def check_definition(ctx, name, type_term, {:extern, mod, fun, arity} = body_term) do
     # Extern: trust the declared type, validate arity matches.
     runtime_params = count_runtime_params(type_term)
@@ -513,6 +550,18 @@ defmodule Haruspex.Check do
   defp count_runtime_params({:pi, :omega, _dom, cod}), do: 1 + count_runtime_params(cod)
   defp count_runtime_params({:pi, :zero, _dom, cod}), do: count_runtime_params(cod)
   defp count_runtime_params(_), do: 0
+
+  # Convert a compiled module name back to a URI.
+  # E.g., MathA → "lib/math_a.hx" (assumes "lib" source root).
+  defp global_module_uri(mod) do
+    parts =
+      mod
+      |> Module.split()
+      |> Enum.map(&Macro.underscore/1)
+
+    source_root = hd(Haruspex.source_roots())
+    Path.join([source_root | parts]) <> ".hx"
+  end
 
   # ============================================================================
   # check_is_type

@@ -202,6 +202,13 @@ defmodule Haruspex.Codegen do
     end
   end
 
+  # Unapplied global (cross-module reference).
+  defp compile({:global, mod, fun, arity}, _names) do
+    quote do
+      &(unquote(mod).unquote(fun) / unquote(arity))
+    end
+  end
+
   # Pair.
   defp compile({:pair, a, b}, names) do
     compiled_a = compile(a, names)
@@ -261,6 +268,23 @@ defmodule Haruspex.Codegen do
     {params, body_ast}
   end
 
+  defp compile_function({:global, mod, fun, arity}, names) do
+    # Same as extern: generate params and compile to a direct call.
+    {params, param_vars} =
+      Enum.reduce(1..arity//1, {[], []}, fn _, {ps, vs} ->
+        var_name = fresh_name(names ++ Enum.map(ps, fn {name, _, _} -> name end))
+        var = Macro.var(var_name, __MODULE__)
+        {ps ++ [var], vs ++ [var]}
+      end)
+
+    body_ast =
+      quote do
+        unquote(mod).unquote(fun)(unquote_splicing(param_vars))
+      end
+
+    {params, body_ast}
+  end
+
   defp compile_function(body, names) do
     {[], compile(body, names)}
   end
@@ -278,6 +302,10 @@ defmodule Haruspex.Codegen do
   end
 
   defp collect_extern_app({:extern, mod, fun, arity}, args) do
+    {:extern, mod, fun, arity, args}
+  end
+
+  defp collect_extern_app({:global, mod, fun, arity}, args) do
     {:extern, mod, fun, arity, args}
   end
 

@@ -33,9 +33,30 @@ defmodule Haruspex.Elaborate do
     :meta_state,
     :holes,
     :auto_implicits,
-    :next_level_var
+    :next_level_var,
+    :db,
+    :uri,
+    :imports,
+    :source_roots
   ]
-  defstruct [:names, :name_list, :level, :meta_state, :holes, :auto_implicits, :next_level_var]
+  defstruct [
+    :names,
+    :name_list,
+    :level,
+    :meta_state,
+    :holes,
+    :auto_implicits,
+    :next_level_var,
+    :db,
+    :uri,
+    :imports,
+    :source_roots
+  ]
+
+  @type import_info :: %{
+          module_path: [atom()],
+          open: boolean() | [atom()] | nil
+        }
 
   @type t :: %__MODULE__{
           names: [{atom(), non_neg_integer()}],
@@ -44,7 +65,11 @@ defmodule Haruspex.Elaborate do
           meta_state: MetaState.t(),
           holes: [hole_info()],
           auto_implicits: %{atom() => term()},
-          next_level_var: non_neg_integer()
+          next_level_var: non_neg_integer(),
+          db: term() | nil,
+          uri: String.t() | nil,
+          imports: [import_info()],
+          source_roots: [String.t()]
         }
 
   # ============================================================================
@@ -82,9 +107,13 @@ defmodule Haruspex.Elaborate do
 
   @doc """
   Create an empty elaboration context.
+
+  Accepts an optional keyword list with `:db`, `:uri`, `:imports`, and
+  `:source_roots` for cross-module resolution. When omitted, import
+  resolution is disabled (standalone elaboration).
   """
-  @spec new() :: t()
-  def new do
+  @spec new(keyword()) :: t()
+  def new(opts \\ []) do
     %__MODULE__{
       names: [],
       name_list: [],
@@ -92,7 +121,11 @@ defmodule Haruspex.Elaborate do
       meta_state: MetaState.new(),
       holes: [],
       auto_implicits: %{},
-      next_level_var: 0
+      next_level_var: 0,
+      db: Keyword.get(opts, :db),
+      uri: Keyword.get(opts, :uri),
+      imports: Keyword.get(opts, :imports, []),
+      source_roots: Keyword.get(opts, :source_roots, [])
     }
   end
 
@@ -108,6 +141,7 @@ defmodule Haruspex.Elaborate do
     case resolve_name(ctx, name) do
       {:builtin, core} -> {:ok, core, ctx}
       {:bound, ix} -> {:ok, {:var, ix}, ctx}
+      {:global, core} -> {:ok, core, ctx}
       :not_found -> {:error, {:unbound_variable, name, span}}
     end
   end
@@ -173,6 +207,11 @@ defmodule Haruspex.Elaborate do
     ctx = %{ctx | meta_state: ms, holes: [hole | ctx.holes]}
 
     {:ok, {:meta, id}, ctx}
+  end
+
+  def elaborate(ctx, {:dot, span, {:var, _span2, module_name}, field_name}) do
+    # Qualified access: Module.field
+    resolve_qualified(ctx, [module_name], field_name, span)
   end
 
   def elaborate(_ctx, {:if, span, _cond, _then_branch, _else_branch}) do
@@ -342,19 +381,138 @@ defmodule Haruspex.Elaborate do
   # Internal — name resolution
   # ============================================================================
 
-  @spec resolve_name(t(), atom()) :: {:builtin, Core.expr()} | {:bound, Core.ix()} | :not_found
+  @spec resolve_name(t(), atom()) ::
+          {:builtin, Core.expr()} | {:bound, Core.ix()} | {:global, Core.expr()} | :not_found
   defp resolve_name(ctx, name) do
-    # Check builtins first. :Type is special — handled via universe elaboration,
-    # so it won't appear here as a var lookup in practice.
+    # 1. Check builtins first.
     case Map.fetch(@builtins, name) do
       {:ok, core} ->
         {:builtin, core}
 
       :error ->
+        # 2. Check local bindings.
         case find_binding(ctx.names, name) do
-          {:ok, bound_level} -> {:bound, ctx.level - bound_level - 1}
-          :error -> :not_found
+          {:ok, bound_level} ->
+            {:bound, ctx.level - bound_level - 1}
+
+          :error ->
+            # 3. Check imported names (open imports).
+            resolve_imported_name(ctx, name)
         end
+    end
+  end
+
+  # Resolve an unqualified name from open imports.
+  @spec resolve_imported_name(t(), atom()) :: {:global, Core.expr()} | :not_found
+  defp resolve_imported_name(%{db: nil}, _name), do: :not_found
+
+  defp resolve_imported_name(ctx, name) do
+    Enum.find_value(ctx.imports, :not_found, fn import_info ->
+      if name_visible_in_import?(import_info, name) do
+        case resolve_from_module(ctx, import_info.module_path, name) do
+          {:ok, core_term} -> {:global, core_term}
+          :error -> nil
+        end
+      end
+    end)
+  end
+
+  # Resolve a qualified name like Math.add or Data.Vec.new.
+  # Checks if the module (or its last segment) matches an import.
+  defp resolve_qualified(%{db: nil}, _module_path, _name, span) do
+    {:error, {:unsupported, :qualified_access, span}}
+  end
+
+  defp resolve_qualified(ctx, module_path, name, span) do
+    # Find an import whose module_path matches (full or last-segment shorthand).
+    matching_import =
+      Enum.find(ctx.imports, fn import_info ->
+        import_info.module_path == module_path or
+          List.last(import_info.module_path) == List.first(module_path)
+      end)
+
+    case matching_import do
+      nil ->
+        {:error, {:unknown_module, Module.concat(module_path), span}}
+
+      import_info ->
+        case resolve_from_module(ctx, import_info.module_path, name) do
+          {:ok, core_term} -> {:ok, core_term, ctx}
+          :error -> {:error, {:unbound_variable, name, span}}
+        end
+    end
+  end
+
+  defp name_visible_in_import?(%{open: true}, _name), do: true
+  defp name_visible_in_import?(%{open: names}, name) when is_list(names), do: name in names
+  defp name_visible_in_import?(%{open: nil}, _name), do: false
+
+  # Resolve a name from an imported module by querying its definitions.
+  @spec resolve_from_module(t(), [atom()] | {:erlang_mod, atom()}, atom()) ::
+          {:ok, Core.expr()} | :error
+  defp resolve_from_module(_ctx, {:erlang_mod, _}, _name), do: :error
+
+  defp resolve_from_module(ctx, module_path, name) do
+    uri = module_path_to_uri(module_path, ctx.source_roots)
+
+    try do
+      case Roux.Runtime.query(ctx.db, :haruspex_parse, uri) do
+        {:ok, entity_ids} ->
+          find_exported_definition(ctx.db, entity_ids, name, module_path)
+
+        {:error, _} ->
+          :error
+      end
+    rescue
+      Roux.Input.NotSetError -> :error
+    end
+  end
+
+  # Find a non-private definition by name in a list of entity IDs.
+  defp find_exported_definition(db, entity_ids, name, module_path) do
+    Enum.find_value(entity_ids, :error, fn entity_id ->
+      entity_name = Roux.Runtime.field(db, Haruspex.Definition, entity_id, :name)
+
+      if entity_name == name do
+        is_private = Roux.Runtime.field(db, Haruspex.Definition, entity_id, :private?)
+
+        if is_private do
+          :error
+        else
+          module_name = Module.concat(module_path)
+          uri = Roux.Runtime.field(db, Haruspex.Definition, entity_id, :uri)
+
+          # Trigger elaboration to populate the type field.
+          case Roux.Runtime.query(db, :haruspex_elaborate, {uri, name}) do
+            {:ok, {type_core, _body_core}} ->
+              arity = count_runtime_params(type_core)
+              {:ok, {:global, module_name, name, arity}}
+
+            {:error, _} ->
+              :error
+          end
+        end
+      end
+    end)
+  end
+
+  # Count runtime (omega) params in a pi type.
+  defp count_runtime_params({:pi, :omega, _dom, cod}), do: 1 + count_runtime_params(cod)
+  defp count_runtime_params({:pi, :zero, _dom, cod}), do: count_runtime_params(cod)
+  defp count_runtime_params(_), do: 0
+
+  # Convert a module path to a file URI.
+  defp module_path_to_uri(module_path, source_roots) do
+    path_segments =
+      Enum.map(module_path, fn segment ->
+        segment |> Atom.to_string() |> Macro.underscore()
+      end)
+
+    relative = Path.join(path_segments) <> ".hx"
+
+    case source_roots do
+      [root | _] -> Path.join(root, relative)
+      [] -> relative
     end
   end
 

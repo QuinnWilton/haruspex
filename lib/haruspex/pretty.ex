@@ -180,6 +180,10 @@ defmodule Haruspex.Pretty do
     "#{inspect(mod)}.#{fun}/#{arity}"
   end
 
+  defp do_pretty({:vglobal, mod, name, arity}, _names, _level, _disambig) do
+    "#{inspect(mod)}.#{name}/#{arity}"
+  end
+
   # ============================================================================
   # Neutral pretty-printing
   # ============================================================================
@@ -340,6 +344,10 @@ defmodule Haruspex.Pretty do
 
   defp do_pretty_term({:extern, mod, fun, arity}, _names, _depth, _disambig) do
     "#{inspect(mod)}.#{fun}/#{arity}"
+  end
+
+  defp do_pretty_term({:global, mod, name, arity}, _names, _depth, _disambig) do
+    "#{inspect(mod)}.#{name}/#{arity}"
   end
 
   defp do_pretty_term({:meta, id}, _names, _depth, _disambig) do
