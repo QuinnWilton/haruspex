@@ -1,10 +1,10 @@
 # Option and result types with a functor class.
 
-type Option(a : Type)
+type Option(a : Type) =
   | none
   | some(a)
 
-type Result(e : Type, a : Type)
+type Result(e : Type, a : Type) =
   | err(e)
   | ok(a)
 

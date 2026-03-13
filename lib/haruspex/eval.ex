@@ -153,20 +153,73 @@ defmodule Haruspex.Eval do
   """
   @spec vcase(eval_ctx(), Value.value(), [{atom(), non_neg_integer(), Core.expr()}]) ::
           Value.value()
-  def vcase(ctx, {:vcon, _type_name, con_name, con_args}, branches) do
-    case Enum.find(branches, fn {name, _arity, _body} -> name == con_name end) do
-      {_name, _arity, body} ->
+  def vcase(ctx, {:vcon, _type_name, con_name, con_args} = scrutinee, branches) do
+    case find_constructor_branch(branches, con_name) do
+      {:ok, _arity, body} ->
         # Extend the environment with constructor arguments (most recent first).
         env = Enum.reverse(con_args) ++ ctx.env
         eval(%{ctx | env: env}, body)
 
-      nil ->
-        raise Haruspex.CompilerBug, "no branch for constructor #{con_name} in case expression"
+      :error ->
+        # Fall through to wildcard branch.
+        case find_wildcard_branch(branches) do
+          {:ok, 1, body} ->
+            eval(%{ctx | env: [scrutinee | ctx.env]}, body)
+
+          {:ok, 0, body} ->
+            eval(ctx, body)
+
+          :error ->
+            raise Haruspex.CompilerBug,
+                  "no branch for constructor #{con_name} in case expression"
+        end
+    end
+  end
+
+  def vcase(ctx, {:vlit, value} = scrutinee, branches) do
+    case find_literal_branch(branches, value) do
+      {:ok, body} ->
+        eval(ctx, body)
+
+      :error ->
+        # Fall through to wildcard branch.
+        case find_wildcard_branch(branches) do
+          {:ok, 1, body} ->
+            eval(%{ctx | env: [scrutinee | ctx.env]}, body)
+
+          {:ok, 0, body} ->
+            eval(ctx, body)
+
+          :error ->
+            raise Haruspex.CompilerBug,
+                  "no branch for literal #{inspect(value)} in case expression"
+        end
     end
   end
 
   def vcase(ctx, {:vneutral, type, ne}, branches) do
     {:vneutral, type, {:ncase, ne, branches, ctx.env}}
+  end
+
+  defp find_constructor_branch(branches, con_name) do
+    Enum.find_value(branches, :error, fn
+      {^con_name, arity, body} when con_name not in [:__lit, :_] -> {:ok, arity, body}
+      _ -> nil
+    end)
+  end
+
+  defp find_literal_branch(branches, value) do
+    Enum.find_value(branches, :error, fn
+      {:__lit, ^value, body} -> {:ok, body}
+      _ -> nil
+    end)
+  end
+
+  defp find_wildcard_branch(branches) do
+    Enum.find_value(branches, :error, fn
+      {:_, arity, body} -> {:ok, arity, body}
+      _ -> nil
+    end)
   end
 
   # ============================================================================

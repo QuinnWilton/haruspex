@@ -463,15 +463,71 @@ defmodule Haruspex.ElaborateTest do
   end
 
   # ============================================================================
-  # If (unsupported at tier 2)
+  # If desugaring
   # ============================================================================
 
   describe "if expression" do
-    test "returns unsupported error" do
+    test "desugars to case on true/false" do
       ctx = Elaborate.new()
       s = span()
       ast = {:if, s, {:lit, s, true}, {:lit, s, 1}, {:lit, s, 2}}
-      assert {:error, {:unsupported, :if, ^s}} = Elaborate.elaborate(ctx, ast)
+      {:ok, core, _ctx} = Elaborate.elaborate(ctx, ast)
+
+      # Should produce: case true do true -> 1; false -> 2 end
+      assert {:case, {:lit, true}, [{:__lit, true, {:lit, 1}}, {:__lit, false, {:lit, 2}}]} = core
+    end
+  end
+
+  # ============================================================================
+  # Nullary constructor pattern resolution
+  # ============================================================================
+
+  describe "nullary constructor in case pattern" do
+    test "bare identifier resolves as constructor, not variable" do
+      source = "type Nat = zero | succ(Nat)"
+      {:ok, forms} = Haruspex.Parser.parse(source)
+      ctx = Elaborate.new()
+
+      ctx =
+        Enum.reduce(forms, ctx, fn
+          {:type_decl, _, _, _, _} = td, ctx ->
+            {:ok, _decl, ctx} = Elaborate.elaborate_type_decl(ctx, td)
+            ctx
+
+          _, ctx ->
+            ctx
+        end)
+
+      s = span()
+
+      # case n do zero -> 1; succ(m) -> 2 end
+      # "zero" should elaborate as {:zero, 0, ...} not {:_, 1, ...}
+      ast =
+        {:case, s, {:var, s, :n},
+         [
+           {:branch, s, {:pat_var, s, :zero}, {:lit, s, 1}},
+           {:branch, s, {:pat_constructor, s, :succ, [{:pat_var, s, :m}]}, {:lit, s, 2}}
+         ]}
+
+      inner_ctx = push_binding(ctx, :n)
+      {:ok, core, _ctx} = Elaborate.elaborate(inner_ctx, ast)
+
+      assert {:case, {:var, 0}, [{:zero, 0, {:lit, 1}}, {:succ, 1, {:lit, 2}}]} = core
+    end
+
+    test "non-constructor bare identifier still elaborates as variable pattern" do
+      ctx = Elaborate.new()
+      s = span()
+
+      # Without any ADTs, "x" should be a variable pattern.
+      ast =
+        {:case, s, {:lit, s, 42},
+         [
+           {:branch, s, {:pat_var, s, :x}, {:var, s, :x}}
+         ]}
+
+      {:ok, core, _ctx} = Elaborate.elaborate(ctx, ast)
+      assert {:case, {:lit, 42}, [{:_, 1, {:var, 0}}]} = core
     end
   end
 

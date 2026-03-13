@@ -8,5 +8,5 @@ defmodule Haruspex.FileInfo do
 
   use Roux.Entity,
     identity: [:uri],
-    tracked: [:imports, :no_prelude?]
+    tracked: [:imports, :no_prelude?, :type_decls, :record_decls, :mutual_groups]
 end

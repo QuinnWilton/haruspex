@@ -2,7 +2,7 @@
 
 import Data.Nat
 
-type Vec(n : Nat, a : Type)
+type Vec(n : Nat, a : Type) =
   | vnil : Vec(zero, a)
   | vcons(a, Vec(n, a)) : Vec(succ(n), a)
 

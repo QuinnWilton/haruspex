@@ -44,9 +44,9 @@ defmodule Haruspex.CheckTest do
                Check.synth(Check.new(), {:lit, "hello"})
     end
 
-    test "boolean literal synthesizes Atom" do
-      assert {:ok, {:lit, true}, {:vbuiltin, :Atom}, _} = Check.synth(Check.new(), {:lit, true})
-      assert {:ok, {:lit, false}, {:vbuiltin, :Atom}, _} = Check.synth(Check.new(), {:lit, false})
+    test "boolean literal synthesizes Bool" do
+      assert {:ok, {:lit, true}, {:vbuiltin, :Bool}, _} = Check.synth(Check.new(), {:lit, true})
+      assert {:ok, {:lit, false}, {:vbuiltin, :Bool}, _} = Check.synth(Check.new(), {:lit, false})
     end
 
     test "atom literal synthesizes Atom" do
@@ -588,19 +588,19 @@ defmodule Haruspex.CheckTest do
   # ============================================================================
 
   describe "builtin op types — additional" do
-    test "builtin :not synthesizes Atom -> Atom" do
+    test "builtin :not synthesizes Bool -> Bool" do
       {:ok, {:builtin, :not}, type, _ctx} = Check.synth(Check.new(), {:builtin, :not})
-      assert {:vpi, :omega, {:vbuiltin, :Atom}, [], {:builtin, :Atom}} = type
+      assert {:vpi, :omega, {:vbuiltin, :Bool}, [], {:builtin, :Bool}} = type
     end
 
-    test "builtin :and synthesizes Atom -> Atom -> Atom" do
+    test "builtin :and synthesizes Bool -> Bool -> Bool" do
       {:ok, {:builtin, :and}, type, _ctx} = Check.synth(Check.new(), {:builtin, :and})
-      assert {:vpi, :omega, {:vbuiltin, :Atom}, [], _cod} = type
+      assert {:vpi, :omega, {:vbuiltin, :Bool}, [], _cod} = type
     end
 
-    test "builtin :or synthesizes Atom -> Atom -> Atom" do
+    test "builtin :or synthesizes Bool -> Bool -> Bool" do
       {:ok, {:builtin, :or}, type, _ctx} = Check.synth(Check.new(), {:builtin, :or})
-      assert {:vpi, :omega, {:vbuiltin, :Atom}, [], _cod} = type
+      assert {:vpi, :omega, {:vbuiltin, :Bool}, [], _cod} = type
     end
 
     test "unknown builtin synthesizes Type 0" do

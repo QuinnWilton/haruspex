@@ -134,12 +134,15 @@ defmodule Haruspex.Erase do
     {erased_scrut, _scrut_type} = synth(scrutinee, ctx)
 
     {:case, erased_scrut,
-     Enum.map(branches, fn {con_name, arity, body} ->
-       # Each branch binds `arity` constructor field variables.
-       # We push placeholder types for them (exact types don't matter for erasure structure).
-       inner_ctx = Enum.reduce(1..arity//1, ctx, fn _, c -> push(c, {:type, {:llit, 0}}) end)
-       {erased_body, _body_type} = synth(body, inner_ctx)
-       {con_name, arity, erased_body}
+     Enum.map(branches, fn
+       {:__lit, value, body} ->
+         {erased_body, _body_type} = synth(body, ctx)
+         {:__lit, value, erased_body}
+
+       {con_name, arity, body} ->
+         inner_ctx = Enum.reduce(1..arity//1, ctx, fn _, c -> push(c, {:type, {:llit, 0}}) end)
+         {erased_body, _body_type} = synth(body, inner_ctx)
+         {con_name, arity, erased_body}
      end)}
   end
 
@@ -263,15 +266,24 @@ defmodule Haruspex.Erase do
     {erased_scrut, _scrut_type} = synth(scrutinee, ctx)
 
     erased_branches =
-      Enum.map(branches, fn {con_name, arity, body} ->
-        inner_ctx = Enum.reduce(1..arity//1, ctx, fn _, c -> push(c, {:type, {:llit, 0}}) end)
-        {erased_body, _body_type} = synth(body, inner_ctx)
-        {con_name, arity, erased_body}
+      Enum.map(branches, fn
+        {:__lit, value, body} ->
+          {erased_body, _body_type} = synth(body, ctx)
+          {:__lit, value, erased_body}
+
+        {con_name, arity, body} ->
+          inner_ctx = Enum.reduce(1..arity//1, ctx, fn _, c -> push(c, {:type, {:llit, 0}}) end)
+          {erased_body, _body_type} = synth(body, inner_ctx)
+          {con_name, arity, erased_body}
       end)
 
     # Use the type of the first branch body as the result type.
     result_type =
       case branches do
+        [{:__lit, _value, body} | _] ->
+          {_erased, body_type} = synth(body, ctx)
+          body_type
+
         [{_cn, arity, body} | _] ->
           inner_ctx = Enum.reduce(1..arity//1, ctx, fn _, c -> push(c, {:type, {:llit, 0}}) end)
           {_erased, body_type} = synth(body, inner_ctx)

@@ -1,6 +1,6 @@
 # Polymorphic linked lists.
 
-type List(a : Type)
+type List(a : Type) =
   | nil
   | cons(a, List(a))
 

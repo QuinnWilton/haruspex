@@ -483,13 +483,13 @@ defmodule Haruspex.ParserTest do
 
   describe "type declarations" do
     test "simple enum" do
-      [decl] = parse!("type Bool | true | false")
+      [decl] = parse!("type Bool = true | false")
       assert {:type_decl, _, :Bool, [], constructors} = decl
       assert [{:constructor, _, true, [], nil}, {:constructor, _, false, [], nil}] = constructors
     end
 
     test "parameterized type with constructors" do
-      [decl] = parse!("type Option(a : Type)\n  | none\n  | some(a)")
+      [decl] = parse!("type Option(a : Type) =\n  | none\n  | some(a)")
       assert {:type_decl, _, :Option, [{:a, {:type_universe, _, nil}}], constructors} = decl
 
       assert [
@@ -499,7 +499,7 @@ defmodule Haruspex.ParserTest do
     end
 
     test "type with kinded parameter" do
-      [decl] = parse!("type Vec(a : Type, n : Nat) | nil")
+      [decl] = parse!("type Vec(a : Type, n : Nat) = nil")
 
       assert {:type_decl, _, :Vec, [{:a, {:type_universe, _, nil}}, {:n, {:var, _, :Nat}}], _} =
                decl
@@ -508,7 +508,7 @@ defmodule Haruspex.ParserTest do
     test "GADT constructor with return type" do
       [decl] =
         parse!(
-          "type Expr(a : Type)\n  | lit(Int) : Expr(Int)\n  | add(Expr(Int), Expr(Int)) : Expr(Int)"
+          "type Expr(a : Type) =\n  | lit(Int) : Expr(Int)\n  | add(Expr(Int), Expr(Int)) : Expr(Int)"
         )
 
       assert {:type_decl, _, :Expr, [{:a, {:type_universe, _, nil}}], [lit, add]} = decl
@@ -702,7 +702,7 @@ defmodule Haruspex.ParserTest do
       assert [{:parse_error, _, _}] = errors
     end
 
-    test "missing | in type decl" do
+    test "missing = in type decl" do
       errors = assert_parse_error("type Bool true")
       assert [{:parse_error, _, _}] = errors
     end
@@ -719,19 +719,19 @@ defmodule Haruspex.ParserTest do
     end
 
     test "invalid type name (lowercase)" do
-      errors = assert_parse_error("type foo | x")
+      errors = assert_parse_error("type foo = x")
       assert [{:parse_error, msg, _}] = errors
       assert msg =~ "type name"
     end
 
     test "invalid constructor in type" do
-      errors = assert_parse_error("type Foo | 42")
+      errors = assert_parse_error("type Foo = 42")
       assert [{:parse_error, msg, _}] = errors
       assert msg =~ "constructor"
     end
 
     test "missing kind annotation on type param" do
-      errors = assert_parse_error("type Foo(a) | x")
+      errors = assert_parse_error("type Foo(a) = x")
       assert [{:parse_error, msg, _}] = errors
       assert msg =~ "expected :"
     end
@@ -952,12 +952,12 @@ defmodule Haruspex.ParserTest do
     end
 
     test "bad type param list separator" do
-      errors = assert_parse_error("type Foo(a : Type +) | x")
+      errors = assert_parse_error("type Foo(a : Type +) = x")
       assert [{:parse_error, _, _}] = errors
     end
 
     test "non-ident type parameter name" do
-      errors = assert_parse_error("type Foo(42) | x")
+      errors = assert_parse_error("type Foo(42) = x")
       assert [{:parse_error, _, _}] = errors
     end
 
@@ -974,7 +974,7 @@ defmodule Haruspex.ParserTest do
     end
 
     test "bad constructor args separator" do
-      errors = assert_parse_error("type Foo | bar(Int +)")
+      errors = assert_parse_error("type Foo = bar(Int +)")
       assert [{:parse_error, _, _}] = errors
     end
 
@@ -987,7 +987,7 @@ defmodule Haruspex.ParserTest do
       # A type with a constructor that has no args — the constructor
       # list is non-empty, so this doesn't hit the empty branch.
       # But a type declaration with parse error before constructors tests the path.
-      [decl] = parse!("type Unit\n  | unit")
+      [decl] = parse!("type Unit =\n  | unit")
       {:type_decl, _, :Unit, [], [_ctor]} = decl
     end
   end
@@ -1001,7 +1001,7 @@ defmodule Haruspex.ParserTest do
       source = """
       import Data.List
 
-      type Option(a : Type)
+      type Option(a : Type) =
         | none
         | some(a)
 

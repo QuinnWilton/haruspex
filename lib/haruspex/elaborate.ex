@@ -39,7 +39,8 @@ defmodule Haruspex.Elaborate do
     :uri,
     :imports,
     :source_roots,
-    :adts
+    :adts,
+    :records
   ]
   defstruct [
     :names,
@@ -54,7 +55,8 @@ defmodule Haruspex.Elaborate do
     :uri,
     :imports,
     :source_roots,
-    :adts
+    :adts,
+    :records
   ]
 
   @type import_info :: %{
@@ -75,7 +77,8 @@ defmodule Haruspex.Elaborate do
           uri: String.t() | nil,
           imports: [import_info()],
           source_roots: [String.t()],
-          adts: %{atom() => Haruspex.ADT.adt_decl()}
+          adts: %{atom() => Haruspex.ADT.adt_decl()},
+          records: %{atom() => Haruspex.Record.record_decl()}
         }
 
   # ============================================================================
@@ -108,7 +111,8 @@ defmodule Haruspex.Elaborate do
       uri: Keyword.get(opts, :uri),
       imports: Keyword.get(opts, :imports, []),
       source_roots: Keyword.get(opts, :source_roots, []),
-      adts: Keyword.get(opts, :adts, %{})
+      adts: Keyword.get(opts, :adts, %{}),
+      records: Keyword.get(opts, :records, %{})
     }
   end
 
@@ -205,9 +209,31 @@ defmodule Haruspex.Elaborate do
     {:ok, {:meta, id}, ctx}
   end
 
-  def elaborate(ctx, {:dot, span, {:var, _span2, module_name}, field_name}) do
-    # Qualified access: Module.field
-    resolve_qualified(ctx, [module_name], field_name, span)
+  def elaborate(ctx, {:dot, span, {:var, _var_span, module_name}, field_name}) do
+    # Check if this is a local binding first — if so, treat as record projection.
+    case resolve_name(ctx, module_name) do
+      {:bound, ix} ->
+        {:ok, {:record_proj, field_name, {:var, ix}}, ctx}
+
+      _ ->
+        # Not a local binding — try qualified module access.
+        resolve_qualified(ctx, [module_name], field_name, span)
+    end
+  end
+
+  def elaborate(ctx, {:dot, _span, target, field_name}) do
+    # Non-variable dot target: always record projection.
+    with {:ok, target_core, ctx} <- elaborate(ctx, target) do
+      {:ok, {:record_proj, field_name, target_core}, ctx}
+    end
+  end
+
+  def elaborate(ctx, {:record_construct, span, record_name, field_assignments}) do
+    elaborate_record_construct(ctx, record_name, field_assignments, span)
+  end
+
+  def elaborate(ctx, {:record_update, span, record_name, target, field_updates}) do
+    elaborate_record_update(ctx, record_name, target, field_updates, span)
   end
 
   def elaborate(ctx, {:case, _span, scrutinee, branches}) do
@@ -216,8 +242,18 @@ defmodule Haruspex.Elaborate do
     end
   end
 
-  def elaborate(_ctx, {:if, span, _cond, _then_branch, _else_branch}) do
-    {:error, {:unsupported, :if, span}}
+  def elaborate(ctx, {:with, _span, scrutinees, branches}) do
+    elaborate_with(ctx, scrutinees, branches)
+  end
+
+  def elaborate(ctx, {:if, _span, cond_expr, then_branch, else_branch}) do
+    # Desugar: if c then a else b → case c do true -> a; false -> b end
+    with {:ok, cond_core, ctx} <- elaborate(ctx, cond_expr) do
+      elaborate_case_branches(ctx, cond_core, [
+        {:branch, nil, {:pat_lit, nil, true}, then_branch},
+        {:branch, nil, {:pat_lit, nil, false}, else_branch}
+      ])
+    end
   end
 
   # Fall through to type elaboration for type-like expressions used as terms.
@@ -379,7 +415,7 @@ defmodule Haruspex.Elaborate do
           {:ok, Haruspex.ADT.adt_decl(), t()} | {:error, elab_error()}
   def elaborate_type_decl(ctx, {:type_decl, span, name, type_params, constructors}) do
     # Pre-register the type name with a placeholder so constructors can reference it.
-    # This allows recursive types like `type Nat | zero | succ(Nat)`.
+    # This allows recursive types like `type Nat = zero | succ(Nat)`.
     placeholder_decl = %{
       name: name,
       params: [],
@@ -473,6 +509,282 @@ defmodule Haruspex.Elaborate do
   end
 
   # ============================================================================
+  # Internal — record elaboration
+  # ============================================================================
+
+  @doc """
+  Elaborate a record declaration.
+
+  Registers the record in the context and its desugared ADT so that
+  constructor names and field projections resolve correctly.
+  """
+  @spec elaborate_record_decl(t(), term()) ::
+          {:ok, Haruspex.Record.record_decl(), t()} | {:error, elab_error()}
+  def elaborate_record_decl(ctx, {:record_decl, span, name, type_params, fields}) do
+    con_name = Haruspex.Record.constructor_name(name)
+
+    # Elaborate type parameters.
+    {elab_params, inner_ctx} =
+      Enum.reduce(type_params, {[], ctx}, fn {param_name, kind_expr}, {acc, c} ->
+        {:ok, kind_core, c} = elaborate_type(c, kind_expr)
+        c = push_binding(c, param_name)
+        {[{param_name, kind_core} | acc], c}
+      end)
+
+    elab_params = Enum.reverse(elab_params)
+
+    # Elaborate field types in telescope order (each field can reference previous ones).
+    {elab_fields, inner_ctx} =
+      Enum.reduce(fields, {[], inner_ctx}, fn {:field, _fspan, fname, ftype}, {acc, c} ->
+        {:ok, type_core, c} = elaborate_type(c, ftype)
+        c = push_binding(c, fname)
+        {[{fname, type_core} | acc], c}
+      end)
+
+    elab_fields = Enum.reverse(elab_fields)
+
+    ctx = restore_bindings(ctx, inner_ctx)
+
+    record_decl = %{
+      name: name,
+      params: elab_params,
+      fields: elab_fields,
+      constructor_name: con_name,
+      span: span
+    }
+
+    # Convert to ADT and register both.
+    adt_decl = Haruspex.Record.record_to_adt(record_decl)
+    level = Haruspex.ADT.compute_level(adt_decl)
+    adt_decl = %{adt_decl | universe_level: level}
+
+    ctx = register_adt(ctx, adt_decl)
+    ctx = %{ctx | records: Map.put(ctx.records, name, record_decl)}
+
+    {:ok, record_decl, ctx}
+  end
+
+  # Elaborate `%Point{x: 1.0, y: 2.0}` into `{:con, :Point, :mk_Point, [1.0, 2.0]}`.
+  @spec elaborate_record_construct(t(), atom(), [{atom(), term()}], term()) ::
+          {:ok, Core.expr(), t()} | {:error, elab_error()}
+  defp elaborate_record_construct(ctx, record_name, field_assignments, span) do
+    case Map.fetch(ctx.records, record_name) do
+      {:ok, record_decl} ->
+        # Reorder assignments to match declaration order.
+        # Fill missing fields with errors.
+        ordered_values =
+          Enum.map(record_decl.fields, fn {fname, _ftype} ->
+            case List.keyfind(field_assignments, fname, 0) do
+              {^fname, value} -> {:ok, value}
+              nil -> {:error, fname}
+            end
+          end)
+
+        missing = for {:error, fname} <- ordered_values, do: fname
+
+        if missing != [] do
+          {:error, {:missing_record_fields, record_name, missing, span}}
+        else
+          values = for {:ok, v} <- ordered_values, do: v
+          elaborate_con_args(ctx, record_name, record_decl.constructor_name, values)
+        end
+
+      :error ->
+        {:error, {:unknown_record, record_name, span}}
+    end
+  end
+
+  defp elaborate_record_update(ctx, record_name, target, field_updates, span) do
+    with {:ok, target_core, ctx} <- elaborate(ctx, target) do
+      # Resolve the record: use explicit name if given, otherwise infer from fields.
+      case resolve_update_record(ctx, record_name, field_updates, span) do
+        {:ok, record_decl} ->
+          # Elaborate each update value.
+          {elab_updates, ctx} =
+            Enum.reduce(field_updates, {%{}, ctx}, fn {fname, expr}, {acc, c} ->
+              case elaborate(c, expr) do
+                {:ok, core, c2} -> {Map.put(acc, fname, core), c2}
+                {:error, _} = err -> throw(err)
+              end
+            end)
+
+          # Check dependent field constraints: if a field is updated and other
+          # fields depend on it, those dependent fields must also be updated.
+          update_names = Map.keys(elab_updates) |> MapSet.new()
+
+          case check_dependent_field_updates(record_decl, update_names, span) do
+            :ok -> :ok
+            {:error, _} = err -> throw(err)
+          end
+
+          # Build: case target of mk_R(f0, f1, ...) -> mk_R(f0', f1', ...)
+          # where f_i' = update_val if in updates, else f_i (original via var).
+          arity = length(record_decl.fields)
+
+          reconstructed_args =
+            record_decl.fields
+            |> Enum.with_index()
+            |> Enum.map(fn {{fname, _ftype}, idx} ->
+              case Map.fetch(elab_updates, fname) do
+                {:ok, update_core} ->
+                  # Shift up by arity — we're under arity binders from the case branch.
+                  Haruspex.Core.shift(update_core, arity, 0)
+
+                :error ->
+                  # Original field via de Bruijn index.
+                  {:var, arity - 1 - idx}
+              end
+            end)
+
+          body = {:con, record_decl.name, record_decl.constructor_name, reconstructed_args}
+          {:ok, {:case, target_core, [{record_decl.constructor_name, arity, body}]}, ctx}
+
+        {:error, _} = err ->
+          err
+      end
+    end
+  catch
+    {:error, _} = err -> err
+  end
+
+  # Check that when updating a field, all fields that depend on it are also updated.
+  # In the telescope, field i's type may reference fields 0..i-1 via de Bruijn vars.
+  # Field i at position i has type with vars 0..i-1 referring to fields i-1..0.
+  @doc false
+  def check_dependent_field_updates(record_decl, updated_fields, span) do
+    fields = record_decl.fields
+
+    # For each field at index i, check if its type mentions any earlier field
+    # (via de Bruijn variable). If so, and that earlier field is updated but
+    # field i is not, it's an error.
+    errors =
+      fields
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {{fname, ftype}, idx} ->
+        # Field at idx has type where var j refers to field (idx - 1 - j).
+        # Check if any updated field is referenced but this field is not updated.
+        if MapSet.member?(updated_fields, fname) do
+          []
+        else
+          # Find which earlier fields this field's type depends on.
+          deps = field_type_dependencies(ftype, idx)
+
+          # If any of those dependencies are being updated, this field must be too.
+          missing =
+            Enum.filter(deps, fn dep_idx ->
+              {dep_name, _} = Enum.at(fields, dep_idx)
+              MapSet.member?(updated_fields, dep_name)
+            end)
+
+          if missing != [] do
+            dep_names = Enum.map(missing, fn i -> elem(Enum.at(fields, i), 0) end)
+            [{fname, dep_names}]
+          else
+            []
+          end
+        end
+      end)
+
+    case errors do
+      [] ->
+        :ok
+
+      [{dependent_field, dep_names} | _] ->
+        {:error,
+         {:dependent_field_not_updated, record_decl.name, dependent_field, dep_names, span}}
+    end
+  end
+
+  # Find which fields (by index) a field type depends on.
+  # In the telescope, field at index `idx` has type where de Bruijn var `j`
+  # refers to field at index `idx - 1 - j`.
+  defp field_type_dependencies(type_expr, field_idx) do
+    vars = collect_free_vars(type_expr, 0)
+    # Convert de Bruijn vars to field indices.
+    vars
+    |> Enum.filter(fn v -> v < field_idx end)
+    |> Enum.map(fn v -> field_idx - 1 - v end)
+    |> Enum.uniq()
+  end
+
+  # Collect free variables in a core term (variables with index >= cutoff).
+  defp collect_free_vars({:var, n}, cutoff) when n >= cutoff, do: [n - cutoff]
+  defp collect_free_vars({:var, _}, _cutoff), do: []
+  defp collect_free_vars({:lit, _}, _cutoff), do: []
+  defp collect_free_vars({:builtin, _}, _cutoff), do: []
+  defp collect_free_vars({:type, _}, _cutoff), do: []
+  defp collect_free_vars({:meta, _}, _cutoff), do: []
+  defp collect_free_vars({:erased}, _cutoff), do: []
+
+  defp collect_free_vars({:pi, _, dom, cod}, cutoff),
+    do: collect_free_vars(dom, cutoff) ++ collect_free_vars(cod, cutoff + 1)
+
+  defp collect_free_vars({:sigma, a, b}, cutoff),
+    do: collect_free_vars(a, cutoff) ++ collect_free_vars(b, cutoff + 1)
+
+  defp collect_free_vars({:app, f, a}, cutoff),
+    do: collect_free_vars(f, cutoff) ++ collect_free_vars(a, cutoff)
+
+  defp collect_free_vars({:lam, _, body}, cutoff), do: collect_free_vars(body, cutoff + 1)
+
+  defp collect_free_vars({:let, d, b}, cutoff),
+    do: collect_free_vars(d, cutoff) ++ collect_free_vars(b, cutoff + 1)
+
+  defp collect_free_vars({:data, _, args}, cutoff),
+    do: Enum.flat_map(args, &collect_free_vars(&1, cutoff))
+
+  defp collect_free_vars({:con, _, _, args}, cutoff),
+    do: Enum.flat_map(args, &collect_free_vars(&1, cutoff))
+
+  defp collect_free_vars(_, _cutoff), do: []
+
+  defp resolve_update_record(ctx, record_name, _field_updates, span)
+       when is_atom(record_name) and record_name != nil do
+    case Map.fetch(ctx.records, record_name) do
+      {:ok, decl} -> {:ok, decl}
+      :error -> {:error, {:unknown_record, record_name, span}}
+    end
+  end
+
+  defp resolve_update_record(ctx, nil, field_updates, span) do
+    update_names = MapSet.new(field_updates, fn {name, _} -> name end)
+
+    matches =
+      Enum.filter(ctx.records, fn {_name, decl} ->
+        record_names = MapSet.new(decl.fields, fn {fname, _} -> fname end)
+        MapSet.subset?(update_names, record_names)
+      end)
+
+    case matches do
+      [{_name, decl}] -> {:ok, decl}
+      [] -> {:error, {:unknown_record_for_update, MapSet.to_list(update_names), span}}
+      _ -> {:error, {:ambiguous_record_update, Enum.map(matches, &elem(&1, 0)), span}}
+    end
+  end
+
+  # ============================================================================
+  # Internal — with elaboration
+  # ============================================================================
+
+  defp elaborate_with(ctx, [scrutinee], branches) do
+    with {:ok, scrut_core, ctx} <- elaborate(ctx, scrutinee) do
+      elaborate_case_branches(ctx, scrut_core, branches)
+    end
+  end
+
+  defp elaborate_with(ctx, [first | rest], branches) do
+    # Multiple scrutinees desugar to nested with expressions.
+    # with e1, e2 do branches end → case e1 do _ -> with e2 do branches end end
+    # The wildcard binds e1's value; branches match against the innermost scrutinee.
+    inner_with = {:with, nil, rest, branches}
+    wildcard_branch = {:branch, nil, {:pat_wildcard, nil}, inner_with}
+
+    with {:ok, scrut_core, ctx} <- elaborate(ctx, first) do
+      elaborate_case_branches(ctx, scrut_core, [wildcard_branch])
+    end
+  end
+
+  # ============================================================================
   # Internal — case elaboration
   # ============================================================================
 
@@ -497,13 +809,15 @@ defmodule Haruspex.Elaborate do
     end
   end
 
-  defp elaborate_branch(ctx, {:pat_constructor, _span, con_name, sub_patterns}, body) do
-    # Look up which ADT this constructor belongs to.
-    arity = length(sub_patterns)
+  defp elaborate_branch(ctx, {:pat_constructor, span, con_name, sub_patterns}, body) do
+    # Flatten nested constructor sub-patterns into nested case expressions.
+    {flat_pats, body} = flatten_nested_patterns(sub_patterns, body, span)
+
+    arity = length(flat_pats)
 
     # Bind pattern variables.
     {inner_ctx, _var_names} =
-      Enum.reduce(sub_patterns, {ctx, []}, fn
+      Enum.reduce(flat_pats, {ctx, []}, fn
         {:pat_var, _span, var_name}, {c, names} ->
           {push_binding(c, var_name), [var_name | names]}
 
@@ -521,14 +835,21 @@ defmodule Haruspex.Elaborate do
     end
   end
 
-  defp elaborate_branch(ctx, {:pat_var, _span, var_name}, body) do
-    # Wildcard/variable pattern: arity 0 catch-all. We wrap in a single binding.
-    inner_ctx = push_binding(ctx, var_name)
+  defp elaborate_branch(ctx, {:pat_var, span, var_name}, body) do
+    # Check if the name is a known nullary constructor.
+    case find_constructor(ctx.adts, var_name) do
+      {:ok, _type_name} ->
+        # Nullary constructor pattern — delegate to constructor branch handler.
+        elaborate_branch(ctx, {:pat_constructor, span, var_name, []}, body)
 
-    with {:ok, body_core, inner_ctx} <- elaborate(inner_ctx, body) do
-      ctx = restore_bindings(ctx, inner_ctx)
-      # Represent as a special catch-all. Use :_ as the constructor name.
-      {:ok, {:_, 1, body_core}, ctx}
+      :error ->
+        # Variable pattern: arity 1 catch-all that binds the scrutinee.
+        inner_ctx = push_binding(ctx, var_name)
+
+        with {:ok, body_core, inner_ctx} <- elaborate(inner_ctx, body) do
+          ctx = restore_bindings(ctx, inner_ctx)
+          {:ok, {:_, 1, body_core}, ctx}
+        end
     end
   end
 
@@ -541,10 +862,63 @@ defmodule Haruspex.Elaborate do
     end
   end
 
+  defp elaborate_branch(ctx, {:pat_record, _span, record_name, field_patterns}, body) do
+    # Desugar to constructor pattern with fields reordered and wildcards for missing fields.
+    case Map.fetch(ctx.records, record_name) do
+      {:ok, record_decl} ->
+        sub_patterns =
+          Enum.map(record_decl.fields, fn {fname, _ftype} ->
+            case List.keyfind(field_patterns, fname, 0) do
+              {^fname, pat} -> pat
+              nil -> {:pat_wildcard, nil}
+            end
+          end)
+
+        elaborate_branch(
+          ctx,
+          {:pat_constructor, nil, record_decl.constructor_name, sub_patterns},
+          body
+        )
+
+      :error ->
+        {:error, {:unknown_record, record_name, nil}}
+    end
+  end
+
   defp elaborate_branch(ctx, {:pat_lit, _span, value}, body) do
     with {:ok, body_core, ctx} <- elaborate(ctx, body) do
       {:ok, {:__lit, value, body_core}, ctx}
     end
+  end
+
+  # ============================================================================
+  # Internal — nested pattern flattening
+  # ============================================================================
+
+  # Replace nested constructor sub-patterns with fresh variables and wrap
+  # the body in nested case expressions. Purely syntactic — no types needed.
+  @spec flatten_nested_patterns([term()], term(), term()) :: {[term()], term()}
+  defp flatten_nested_patterns(sub_patterns, body, _span) do
+    {flat_pats, body, _n} =
+      Enum.reduce(sub_patterns, {[], body, 0}, fn
+        {:pat_constructor, pat_span, nested_con, nested_sub_pats}, {acc, body, n} ->
+          fresh = :"_nested_#{n}"
+          flat_pat = {:pat_var, pat_span, fresh}
+
+          wrapped_body =
+            {:case, pat_span, {:var, pat_span, fresh},
+             [
+               {:branch, pat_span, {:pat_constructor, pat_span, nested_con, nested_sub_pats},
+                body}
+             ]}
+
+          {acc ++ [flat_pat], wrapped_body, n + 1}
+
+        other_pat, {acc, body, n} ->
+          {acc ++ [other_pat], body, n}
+      end)
+
+    {flat_pats, body}
   end
 
   # ============================================================================

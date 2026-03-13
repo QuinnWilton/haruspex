@@ -69,6 +69,7 @@ defmodule Haruspex.Tokenizer do
           | :newline
           | :underscore
           | :at
+          | :percent
           # special
           | :eof
 
@@ -223,6 +224,10 @@ defmodule Haruspex.Tokenizer do
 
   defp do_tokenize(<<"@", rest::binary>>, pos, acc, depth) do
     emit(rest, pos, 1, :at, nil, acc, depth)
+  end
+
+  defp do_tokenize(<<"%", rest::binary>>, pos, acc, depth) do
+    emit(rest, pos, 1, :percent, nil, acc, depth)
   end
 
   defp do_tokenize(<<"_", rest::binary>>, pos, acc, depth) do

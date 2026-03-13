@@ -58,10 +58,10 @@ def no_return_type(x : Int) do
 end
 
 # Type with single constructor.
-type Unit | unit
+type Unit = unit
 
 # Type with no type params.
-type Void | absurd
+type Void = absurd
 
 # Empty mutual block.
 mutual do

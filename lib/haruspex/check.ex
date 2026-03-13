@@ -38,7 +38,7 @@ defmodule Haruspex.Check do
           | {:universe_error, String.t()}
 
   @enforce_keys [:context, :names, :meta_state]
-  defstruct [:context, :names, :meta_state, :db, hole_reports: [], adts: %{}]
+  defstruct [:context, :names, :meta_state, :db, hole_reports: [], adts: %{}, records: %{}]
 
   @type t :: %__MODULE__{
           context: Context.t(),
@@ -46,7 +46,8 @@ defmodule Haruspex.Check do
           meta_state: MetaState.t(),
           db: term() | nil,
           hole_reports: [hole_report()],
-          adts: %{atom() => Haruspex.ADT.adt_decl()}
+          adts: %{atom() => Haruspex.ADT.adt_decl()},
+          records: %{atom() => Haruspex.Record.record_decl()}
         }
 
   # ============================================================================
@@ -100,8 +101,8 @@ defmodule Haruspex.Check do
   def synth(ctx, {:lit, n}) when is_integer(n), do: {:ok, {:lit, n}, {:vbuiltin, :Int}, ctx}
   def synth(ctx, {:lit, f}) when is_float(f), do: {:ok, {:lit, f}, {:vbuiltin, :Float}, ctx}
   def synth(ctx, {:lit, s}) when is_binary(s), do: {:ok, {:lit, s}, {:vbuiltin, :String}, ctx}
-  def synth(ctx, {:lit, true}), do: {:ok, {:lit, true}, {:vbuiltin, :Atom}, ctx}
-  def synth(ctx, {:lit, false}), do: {:ok, {:lit, false}, {:vbuiltin, :Atom}, ctx}
+  def synth(ctx, {:lit, true}), do: {:ok, {:lit, true}, {:vbuiltin, :Bool}, ctx}
+  def synth(ctx, {:lit, false}), do: {:ok, {:lit, false}, {:vbuiltin, :Bool}, ctx}
   def synth(ctx, {:lit, a}) when is_atom(a), do: {:ok, {:lit, a}, {:vbuiltin, :Atom}, ctx}
 
   # Type universe.
@@ -256,21 +257,33 @@ defmodule Haruspex.Check do
     end
   end
 
+  # Record projection: desugar to case expression.
+  def synth(ctx, {:record_proj, field_name, expr}) do
+    with {:ok, expr_term, expr_type, ctx} <- synth(ctx, expr) do
+      forced = MetaState.force(ctx.meta_state, expr_type)
+
+      case record_proj_desugar(ctx, field_name, expr_term, forced) do
+        {:ok, case_term, field_type} ->
+          {:ok, case_term, field_type, ctx}
+
+        :error ->
+          {:error, {:not_a_record, forced, field_name}}
+      end
+    end
+  end
+
   # Case expression.
   def synth(ctx, {:case, scrutinee, branches}) do
     with {:ok, scrut_term, scrut_type, ctx} <- synth(ctx, scrutinee) do
-      _scrut_type = MetaState.force(ctx.meta_state, scrut_type)
+      forced_scrut_type = MetaState.force(ctx.meta_state, scrut_type)
 
-      # Type check each branch. The return type is the type of the first branch.
+      # Type check each branch with refined field types.
       {checked_branches, result_type, ctx} =
-        Enum.reduce(branches, {[], nil, ctx}, fn {con_name, arity, body}, {acc, ret_type, ctx} ->
-          # Extend context with constructor field bindings.
-          # For now, use a placeholder type for each field. Full dependent
-          # matching with index refinement comes in tier5-pattern-matching.
-          inner_ctx =
-            Enum.reduce(1..arity//1, ctx, fn _, c ->
-              extend_ctx(c, :_field, {:vtype, {:llit, 0}}, :omega)
-            end)
+        Enum.reduce(branches, {[], nil, ctx}, fn branch, {acc, ret_type, ctx} ->
+          {inner_ctx, branch_head} =
+            extend_branch_ctx(ctx, forced_scrut_type, branch)
+
+          body = elem(branch, tuple_size(branch) - 1)
 
           case synth(inner_ctx, body) do
             {:ok, body_term, body_type, inner_ctx} ->
@@ -283,9 +296,13 @@ defmodule Haruspex.Check do
                   ret_type
                 end
 
-              {[{con_name, arity, body_term} | acc], ret, ctx}
+              checked = put_elem(branch_head, tuple_size(branch_head) - 1, body_term)
+              {[checked | acc], ret, ctx}
           end
         end)
+
+      # Exhaustiveness checking (warnings only).
+      _exhaust = Haruspex.Pattern.check_exhaustiveness(ctx.adts, forced_scrut_type, branches)
 
       result_type = result_type || {:vtype, {:llit, 0}}
       {:ok, {:case, scrut_term, Enum.reverse(checked_branches)}, result_type, ctx}
@@ -429,6 +446,47 @@ defmodule Haruspex.Check do
     end
   end
 
+  # Case expression against a known expected type: use goal type abstraction
+  # to enable dependent type refinement in branches.
+  def check(ctx, {:case, scrutinee, branches}, expected) do
+    with {:ok, scrut_term, scrut_type, ctx} <- synth(ctx, scrutinee) do
+      forced_scrut_type = MetaState.force(ctx.meta_state, scrut_type)
+      scrut_val = eval_in(ctx, scrut_term)
+      lvl = Context.level(ctx.context)
+
+      # Abstract the scrutinee out of the expected type to build a motive.
+      {:ok, motive_core} =
+        Haruspex.Pattern.abstract_over(scrut_val, expected, ctx.meta_state, lvl)
+
+      # Type check each branch with the motive applied to the branch constructor.
+      {checked_branches, ctx} =
+        Enum.reduce(branches, {[], ctx}, fn branch, {acc, ctx} ->
+          {inner_ctx, branch_head} =
+            extend_branch_ctx(ctx, forced_scrut_type, branch)
+
+          # Compute the branch-specific expected type by evaluating the motive
+          # with the branch's constructor value. For non-dependent cases (motive
+          # doesn't use var 0), this just returns the original expected type.
+          branch_expected = eval_motive(ctx, motive_core, branch, scrut_val)
+
+          body = elem(branch, tuple_size(branch) - 1)
+
+          case check(inner_ctx, body, branch_expected) do
+            {:ok, body_term, inner_ctx} ->
+              ctx = restore_ctx(ctx, inner_ctx)
+              checked = put_elem(branch_head, tuple_size(branch_head) - 1, body_term)
+              {[checked | acc], ctx}
+          end
+        end)
+
+      # Exhaustiveness checking (warnings only).
+      _exhaust =
+        Haruspex.Pattern.check_exhaustiveness(ctx.adts, forced_scrut_type, branches)
+
+      {:ok, {:case, scrut_term, Enum.reverse(checked_branches)}, ctx}
+    end
+  end
+
   # Fallback: synth and unify.
   def check(ctx, term, expected) do
     with {:ok, term, inferred, ctx} <- synth(ctx, term) do
@@ -493,6 +551,39 @@ defmodule Haruspex.Check do
 
     with {:ok, checked_body, def_ctx} <- check(def_ctx, body_term, type_val) do
       ctx = restore_ctx(ctx, def_ctx)
+
+      with {:ok, ctx} <- post_process(ctx) do
+        zonked = zonk(ctx.meta_state, Context.level(ctx.context), checked_body)
+        {:ok, zonked, ctx}
+      end
+    end
+  end
+
+  @doc """
+  Check a definition that belongs to a mutual group.
+
+  All mutual siblings' types are added to the context before checking the body,
+  so cross-recursive references type-check correctly.
+  """
+  @spec check_mutual_definition(
+          t(),
+          atom(),
+          Core.expr(),
+          Core.expr(),
+          [{atom(), Core.expr()}]
+        ) :: {:ok, Core.expr(), t()} | {:error, type_error()}
+  def check_mutual_definition(ctx, _name, type_term, body_term, all_sigs) do
+    # Extend context with all mutual names (in order).
+    mutual_ctx =
+      Enum.reduce(all_sigs, ctx, fn {sig_name, sig_type}, acc ->
+        type_val = eval_in(acc, sig_type)
+        extend_ctx(acc, sig_name, type_val, :omega)
+      end)
+
+    type_val = eval_in(mutual_ctx, type_term)
+
+    with {:ok, checked_body, mutual_ctx} <- check(mutual_ctx, body_term, type_val) do
+      ctx = restore_ctx(ctx, mutual_ctx)
 
       with {:ok, ctx} <- post_process(ctx) do
         zonked = zonk(ctx.meta_state, Context.level(ctx.context), checked_body)
@@ -607,11 +698,18 @@ defmodule Haruspex.Check do
   def zonk(ms, level, {:con, type_name, con_name, args}),
     do: {:con, type_name, con_name, Enum.map(args, &zonk(ms, level, &1))}
 
+  def zonk(ms, level, {:record_proj, field, expr}),
+    do: {:record_proj, field, zonk(ms, level, expr)}
+
   def zonk(ms, level, {:case, scrutinee, branches}),
     do:
       {:case, zonk(ms, level, scrutinee),
-       Enum.map(branches, fn {cn, arity, body} ->
-         {cn, arity, zonk(ms, level + arity, body)}
+       Enum.map(branches, fn
+         {:__lit, value, body} ->
+           {:__lit, value, zonk(ms, level, body)}
+
+         {cn, arity, body} ->
+           {cn, arity, zonk(ms, level + arity, body)}
        end)}
 
   def zonk(_ms, _level, term), do: term
@@ -624,7 +722,8 @@ defmodule Haruspex.Check do
     Int: {:vtype, {:llit, 0}},
     Float: {:vtype, {:llit, 0}},
     String: {:vtype, {:llit, 0}},
-    Atom: {:vtype, {:llit, 0}}
+    Atom: {:vtype, {:llit, 0}},
+    Bool: {:vtype, {:llit, 0}}
   }
 
   defp builtin_type(name) do
@@ -650,17 +749,17 @@ defmodule Haruspex.Check do
   end
 
   defp builtin_op_type(:not) do
-    {:vpi, :omega, {:vbuiltin, :Atom}, [], {:builtin, :Atom}}
+    {:vpi, :omega, {:vbuiltin, :Bool}, [], {:builtin, :Bool}}
   end
 
   defp builtin_op_type(name) when name in [:eq, :neq, :lt, :gt, :lte, :gte] do
     int = {:vbuiltin, :Int}
-    {:vpi, :omega, int, [], {:pi, :omega, {:builtin, :Int}, {:builtin, :Atom}}}
+    {:vpi, :omega, int, [], {:pi, :omega, {:builtin, :Int}, {:builtin, :Bool}}}
   end
 
   defp builtin_op_type(name) when name in [:and, :or] do
-    atom = {:vbuiltin, :Atom}
-    {:vpi, :omega, atom, [], {:pi, :omega, {:builtin, :Atom}, {:builtin, :Atom}}}
+    bool = {:vbuiltin, :Bool}
+    {:vpi, :omega, bool, [], {:pi, :omega, {:builtin, :Bool}, {:builtin, :Bool}}}
   end
 
   defp builtin_op_type(_name) do
@@ -692,6 +791,117 @@ defmodule Haruspex.Check do
 
     source_root = hd(Haruspex.source_roots())
     Path.join([source_root | parts]) <> ".hx"
+  end
+
+  # ============================================================================
+  # Record projection desugaring
+  # ============================================================================
+
+  # Desugar `record_proj(field, expr)` into a case expression that extracts the field.
+  # Returns `{:ok, case_term, field_type}` or `:error`.
+  defp record_proj_desugar(ctx, field_name, expr_term, {:vdata, type_name, type_args}) do
+    case Map.fetch(ctx.records, type_name) do
+      {:ok, record_decl} ->
+        case Haruspex.Record.field_info(record_decl, field_name) do
+          {:ok, field_idx, field_type_core} ->
+            arity = length(record_decl.fields)
+
+            # Build: case expr do mk_R(f0, f1, ...) -> f<idx> end
+            # The body references the field at de Bruijn index (arity - 1 - field_idx).
+            body = {:var, arity - 1 - field_idx}
+
+            case_term =
+              {:case, expr_term, [{record_decl.constructor_name, arity, body}]}
+
+            # Evaluate the field type with type args substituted.
+            param_env = Enum.reverse(type_args)
+            eval_ctx = make_eval_ctx(ctx, param_env)
+            field_type = Eval.eval(eval_ctx, field_type_core)
+
+            {:ok, case_term, field_type}
+
+          :error ->
+            :error
+        end
+
+      :error ->
+        :error
+    end
+  end
+
+  defp record_proj_desugar(_ctx, _field_name, _expr_term, _type), do: :error
+
+  # ============================================================================
+  # Case branch context extension
+  # ============================================================================
+
+  # Literal branch: 0 binders.
+  defp extend_branch_ctx(ctx, _scrut_type, {:__lit, value, _body}) do
+    {ctx, {:__lit, value, nil}}
+  end
+
+  # Wildcard with 0 binders.
+  defp extend_branch_ctx(ctx, _scrut_type, {:_, 0, _body}) do
+    {ctx, {:_, 0, nil}}
+  end
+
+  # Wildcard with 1 binder: bind scrutinee with its type.
+  defp extend_branch_ctx(ctx, scrut_type, {:_, 1, _body}) do
+    {extend_ctx(ctx, :_match, scrut_type, :omega), {:_, 1, nil}}
+  end
+
+  # Constructor branch: look up actual field types from ADT decl.
+  defp extend_branch_ctx(ctx, scrut_type, {con_name, arity, _body}) do
+    inner_ctx =
+      case constructor_field_types(ctx, scrut_type, con_name, arity) do
+        {:ok, field_types} ->
+          Enum.reduce(field_types, ctx, fn field_type, c ->
+            extend_ctx(c, :_field, field_type, :omega)
+          end)
+
+        :error ->
+          # Fallback to placeholder types.
+          Enum.reduce(1..arity//1, ctx, fn _, c ->
+            extend_ctx(c, :_field, {:vtype, {:llit, 0}}, :omega)
+          end)
+      end
+
+    {inner_ctx, {con_name, arity, nil}}
+  end
+
+  # Look up constructor field types from the ADT declaration, evaluated
+  # under the scrutinee's type arguments.
+  defp constructor_field_types(ctx, {:vdata, type_name, type_args}, con_name, arity) do
+    with {:ok, decl} <- Map.fetch(ctx.adts, type_name),
+         con when con != nil <- Enum.find(decl.constructors, &(&1.name == con_name)),
+         true <- length(con.fields) == arity do
+      # Evaluate field types with type args as environment.
+      # Type params are bound outermost-first, so reverse for de Bruijn env.
+      param_env = Enum.reverse(type_args)
+      eval_ctx = make_eval_ctx(ctx, param_env)
+
+      field_types =
+        Enum.map(con.fields, fn field_core ->
+          Eval.eval(eval_ctx, field_core)
+        end)
+
+      {:ok, field_types}
+    else
+      _ -> :error
+    end
+  end
+
+  defp constructor_field_types(_ctx, _scrut_type, _con_name, _arity), do: :error
+
+  # Evaluate the motive at a particular branch to get the expected type.
+  # The motive is a core term where {:var, 0} stands for the scrutinee.
+  # We substitute the scrutinee value back (since for non-dependent cases
+  # the motive is just the expected type with no var 0 references).
+  defp eval_motive(ctx, motive_core, _branch, scrut_val) do
+    # Evaluate motive_core with the scrutinee value in scope.
+    env = [scrut_val]
+    eval_ctx = make_eval_ctx(ctx, env)
+    Eval.eval(eval_ctx, motive_core)
   end
 
   # ============================================================================

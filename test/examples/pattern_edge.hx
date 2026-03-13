@@ -1,6 +1,6 @@
 # Pattern edge cases.
 
-type Tree(a : Type)
+type Tree(a : Type) =
   | leaf
   | node(Tree(a), a, Tree(a))
 
@@ -15,7 +15,7 @@ def deep_match(t : Tree(Int)) : Int do
 end
 
 # Many-arg constructor patterns.
-type Quintuple(a : Type, b : Type, c : Type, d : Type, e : Type)
+type Quintuple(a : Type, b : Type, c : Type, d : Type, e : Type) =
   | quint(a, b, c, d, e)
 
 def first_of_five(q : Quintuple(Int, Int, Int, Int, Int)) : Int do

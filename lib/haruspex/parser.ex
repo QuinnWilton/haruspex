@@ -529,8 +529,19 @@ defmodule Haruspex.Parser do
       with {:ok, type_params, state} <- parse_optional_type_params(state) do
         state = skip_newlines(state)
 
-        with {:ok, state} <- expect(state, :bar) do
+        with {:ok, state} <- expect(state, :eq) do
           state = skip_newlines(state)
+
+          # Skip optional leading | (allows `type Nat = | zero | succ(Nat)`).
+          state =
+            case peek(state) do
+              {:bar, _, _} ->
+                state = advance(state)
+                skip_newlines(state)
+
+              _ ->
+                state
+            end
 
           with {:ok, constructors, state} <- parse_constructors(state) do
             end_span =
@@ -1012,6 +1023,176 @@ defmodule Haruspex.Parser do
   end
 
   # ============================================================================
+  # Record expressions: %Point{x: 1.0} and %{p | x: 3.0}
+  # ============================================================================
+
+  # %Point{x: 1.0, y: 2.0}  — record construction
+  # %Point{p | x: 3.0}      — typed record update
+  # %{p | x: 3.0}           — untyped record update
+  defp parse_record_expr(state) do
+    {_, start_span, _} = peek(state)
+    state = advance(state)
+
+    case peek(state) do
+      {:upper_ident, _, record_name} ->
+        state = advance(state)
+
+        with {:ok, state} <- expect(state, :lbrace) do
+          state = skip_newlines(state)
+          # Disambiguate: %Point{x: 1.0} (construction) vs %Point{p | x: 3.0} (typed update).
+          # If next is `ident :`, it's construction. If `expr |`, it's update.
+          parse_record_construct_or_update(state, start_span, record_name)
+        end
+
+      {:lbrace, _, _} ->
+        # %{p | x: 3.0} — untyped record update.
+        state = advance(state)
+        state = skip_newlines(state)
+        parse_record_update_body(state, start_span, nil)
+
+      {tag, span, _} ->
+        {:error, "expected record name or { after %, got #{tag}", span}
+    end
+  end
+
+  # After seeing %Point{, disambiguate construction from typed update.
+  defp parse_record_construct_or_update(state, start_span, record_name) do
+    # Try to detect update: the first token is an expression followed by |.
+    # Construction always starts with `ident :`. If it doesn't match that,
+    # try parsing as update.
+    case peek(state) do
+      {:ident, _, _} ->
+        # Could be `x: expr` (construction) or `x | ...` (update where target is a var).
+        # Peek at second token to decide.
+        case peek2(state) do
+          {:colon, _, _} ->
+            # Construction: %Point{x: 1.0, y: 2.0}
+            with {:ok, fields, state} <- parse_field_assignments(state) do
+              end_span = span_of(state)
+
+              with {:ok, state} <- expect(state, :rbrace) do
+                {:ok, {:record_construct, merge(start_span, end_span), record_name, fields},
+                 state}
+              end
+            end
+
+          _ ->
+            # Update: %Point{p | x: 3.0}
+            parse_record_update_body(state, start_span, record_name)
+        end
+
+      {:rbrace, _, _} ->
+        # Empty construction: %Point{}
+        end_span = span_of(state)
+        {:ok, {:record_construct, merge(start_span, end_span), record_name, []}, advance(state)}
+
+      _ ->
+        # Assume update: %Point{some_expr | x: 3.0}
+        parse_record_update_body(state, start_span, record_name)
+    end
+  end
+
+  # Parse the body of a record update: expr | field: val, ...}
+  # record_name is nil for untyped updates (%{p | ...}).
+  defp parse_record_update_body(state, start_span, record_name) do
+    with {:ok, target, state} <- parse_expression(state, 0) do
+      state = skip_newlines(state)
+
+      with {:ok, state} <- expect(state, :bar) do
+        state = skip_newlines(state)
+
+        with {:ok, fields, state} <- parse_field_assignments(state) do
+          end_span = span_of(state)
+
+          with {:ok, state} <- expect(state, :rbrace) do
+            {:ok, {:record_update, merge(start_span, end_span), record_name, target, fields},
+             state}
+          end
+        end
+      end
+    end
+  end
+
+  # Parse field: value pairs separated by commas.
+  defp parse_field_assignments(state, acc \\ []) do
+    case peek(state) do
+      {:rbrace, _, _} ->
+        {:ok, Enum.reverse(acc), state}
+
+      _ ->
+        with {:ok, name, _span, state} <- expect_ident(state),
+             {:ok, state} <- expect(state, :colon) do
+          state = skip_newlines(state)
+
+          with {:ok, expr, state} <- parse_expression(state, 0) do
+            state = skip_newlines(state)
+
+            case peek(state) do
+              {:comma, _, _} ->
+                state = skip_newlines(advance(state))
+                parse_field_assignments(state, [{name, expr} | acc])
+
+              _ ->
+                {:ok, Enum.reverse([{name, expr} | acc]), state}
+            end
+          end
+        end
+    end
+  end
+
+  # Parse %Point{x: x, y: y} pattern.
+  defp parse_record_pattern(state, start_span) do
+    state = advance(state)
+
+    case peek(state) do
+      {:upper_ident, _, record_name} ->
+        state = advance(state)
+
+        with {:ok, state} <- expect(state, :lbrace) do
+          state = skip_newlines(state)
+
+          with {:ok, field_pats, state} <- parse_field_patterns(state) do
+            end_span = span_of(state)
+
+            with {:ok, state} <- expect(state, :rbrace) do
+              {:ok, {:pat_record, merge(start_span, end_span), record_name, field_pats}, state}
+            end
+          end
+        end
+
+      {tag, span, _} ->
+        {:error, "expected record name after % in pattern, got #{tag}", span}
+    end
+  end
+
+  # Parse field: pattern pairs separated by commas.
+  defp parse_field_patterns(state, acc \\ []) do
+    case peek(state) do
+      {:rbrace, _, _} ->
+        {:ok, Enum.reverse(acc), state}
+
+      _ ->
+        with {:ok, name, _span, state} <- expect_ident(state),
+             {:ok, state} <- expect(state, :colon) do
+          state = skip_newlines(state)
+
+          with {:ok, pat, state} <- parse_pattern(state) do
+            state = skip_newlines(state)
+
+            case peek(state) do
+              {:comma, _, _} ->
+                state = skip_newlines(advance(state))
+                parse_field_patterns(state, [{name, pat} | acc])
+
+              _ ->
+                {:ok, Enum.reverse([{name, pat} | acc]), state}
+            end
+          end
+        end
+    end
+  end
+
+  # ============================================================================
   # Block body (sequences of expressions inside do/end)
   # ============================================================================
 
@@ -1299,11 +1480,17 @@ defmodule Haruspex.Parser do
       {:case, _, _} ->
         parse_case_expr(state)
 
+      {:with, _, _} ->
+        parse_with_expr(state)
+
       {:let, _, _} ->
         parse_let_expr(state)
 
       {:if, _, _} ->
         parse_if_expr(state)
+
+      {:percent, _, _} ->
+        parse_record_expr(state)
 
       {tag, span, _} ->
         {:error, "expected expression, got #{tag}", span}
@@ -1498,6 +1685,40 @@ defmodule Haruspex.Parser do
   # Case expression
   # ============================================================================
 
+  # with e1, e2 do p1 -> body1; p2 -> body2 end
+  defp parse_with_expr(state) do
+    {_, start_span, _} = peek(state)
+    state = advance(state)
+
+    with {:ok, scrutinees, state} <- parse_with_scrutinees(state, []),
+         {:ok, state} <- expect(state, :do) do
+      state = skip_newlines(state)
+
+      with {:ok, branches, state} <- parse_branches(state, []) do
+        {_, end_span, _} = peek(state)
+
+        with {:ok, state} <- expect(state, :end) do
+          {:ok, {:with, merge(start_span, end_span), scrutinees, branches}, state}
+        end
+      end
+    end
+  end
+
+  defp parse_with_scrutinees(state, acc) do
+    with {:ok, expr, state} <- parse_expression(state, 0) do
+      state = skip_newlines(state)
+
+      case peek(state) do
+        {:comma, _, _} ->
+          state = skip_newlines(advance(state))
+          parse_with_scrutinees(state, [expr | acc])
+
+        _ ->
+          {:ok, Enum.reverse([expr | acc]), state}
+      end
+    end
+  end
+
   defp parse_case_expr(state) do
     {_, start_span, _} = peek(state)
     state = advance(state)
@@ -1668,6 +1889,9 @@ defmodule Haruspex.Parser do
           {t, s, _} ->
             {:error, "expected number after - in pattern, got #{t}", s}
         end
+
+      {:percent, span, _} ->
+        parse_record_pattern(state, span)
 
       {tag, span, _} ->
         {:error, "expected pattern, got #{tag}", span}

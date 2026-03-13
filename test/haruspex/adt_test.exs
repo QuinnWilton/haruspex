@@ -86,19 +86,19 @@ defmodule Haruspex.ADTTest do
 
   describe "strict positivity" do
     test "Option is strictly positive" do
-      {decl, _ctx} = elaborate_type("type Option(a : Type) | none | some(a)")
+      {decl, _ctx} = elaborate_type("type Option(a : Type) = none | some(a)")
 
       assert :ok = ADT.check_positivity(decl)
     end
 
     test "List is strictly positive" do
-      {decl, _ctx} = elaborate_type("type List(a : Type) | nil | cons(a, List(a))")
+      {decl, _ctx} = elaborate_type("type List(a : Type) = nil | cons(a, List(a))")
 
       assert :ok = ADT.check_positivity(decl)
     end
 
     test "Nat is strictly positive" do
-      {decl, _ctx} = elaborate_type("type Nat | zero | succ(Nat)")
+      {decl, _ctx} = elaborate_type("type Nat = zero | succ(Nat)")
 
       assert :ok = ADT.check_positivity(decl)
     end
@@ -146,7 +146,7 @@ defmodule Haruspex.ADTTest do
 
   describe "constructor type computation" do
     test "nullary constructor" do
-      {decl, _ctx} = elaborate_type("type Nat | zero | succ(Nat)")
+      {decl, _ctx} = elaborate_type("type Nat = zero | succ(Nat)")
 
       # zero : Nat (no params, no fields).
       zero_type = ADT.constructor_type(decl, :zero)
@@ -158,7 +158,7 @@ defmodule Haruspex.ADTTest do
     end
 
     test "parameterized constructor" do
-      {decl, _ctx} = elaborate_type("type Option(a : Type) | none | some(a)")
+      {decl, _ctx} = elaborate_type("type Option(a : Type) = none | some(a)")
 
       # some : {a : Type} -> a -> Option(a)
       some_type = ADT.constructor_type(decl, :some)
@@ -178,13 +178,13 @@ defmodule Haruspex.ADTTest do
 
   describe "universe level computation" do
     test "simple type at level 0" do
-      {decl, _ctx} = elaborate_type("type Nat | zero | succ(Nat)")
+      {decl, _ctx} = elaborate_type("type Nat = zero | succ(Nat)")
 
       assert {:llit, 0} = ADT.compute_level(decl)
     end
 
     test "parameterized type with Type parameter" do
-      {decl, _ctx} = elaborate_type("type Option(a : Type) | none | some(a)")
+      {decl, _ctx} = elaborate_type("type Option(a : Type) = none | some(a)")
 
       # Type parameter contributes Type 0, so level = succ(lvar(...)) or similar.
       level = ADT.compute_level(decl)
@@ -287,7 +287,7 @@ defmodule Haruspex.ADTTest do
 
   describe "elaboration" do
     test "type declaration registers ADT in context" do
-      ctx = elaborate_source("type Nat | zero | succ(Nat)")
+      ctx = elaborate_source("type Nat = zero | succ(Nat)")
 
       assert Map.has_key?(ctx.adts, :Nat)
       decl = ctx.adts[:Nat]
@@ -296,7 +296,7 @@ defmodule Haruspex.ADTTest do
     end
 
     test "constructor names resolve during elaboration" do
-      ctx = elaborate_source("type Nat | zero | succ(Nat)")
+      ctx = elaborate_source("type Nat = zero | succ(Nat)")
 
       # Elaborate a reference to `zero`.
       {:ok, core, _ctx} = Elaborate.elaborate(ctx, {:var, nil, :zero})
@@ -304,7 +304,7 @@ defmodule Haruspex.ADTTest do
     end
 
     test "constructor application elaborates" do
-      ctx = elaborate_source("type Nat | zero | succ(Nat)")
+      ctx = elaborate_source("type Nat = zero | succ(Nat)")
 
       # Elaborate `succ(zero)`.
       {:ok, core, _ctx} =
@@ -314,7 +314,7 @@ defmodule Haruspex.ADTTest do
     end
 
     test "case expression elaborates" do
-      ctx = elaborate_source("type Nat | zero | succ(Nat)")
+      ctx = elaborate_source("type Nat = zero | succ(Nat)")
 
       # case zero do zero -> 1; succ(n) -> 2 end
       case_ast =
@@ -334,14 +334,14 @@ defmodule Haruspex.ADTTest do
     end
 
     test "data type name resolves as type" do
-      ctx = elaborate_source("type Nat | zero | succ(Nat)")
+      ctx = elaborate_source("type Nat = zero | succ(Nat)")
 
       {:ok, core, _ctx} = Elaborate.elaborate(ctx, {:var, nil, :Nat})
       assert {:data, :Nat, []} = core
     end
 
     test "parameterized data type application" do
-      ctx = elaborate_source("type Option(a : Type) | none | some(a)")
+      ctx = elaborate_source("type Option(a : Type) = none | some(a)")
 
       # Option(Int)
       {:ok, core, _ctx} =

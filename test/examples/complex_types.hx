@@ -56,5 +56,5 @@ end
 @implicit {a : Type} {b : Type}
 
 # Type with kind-annotated params.
-type Functor(f : Type -> Type)
+type Functor(f : Type -> Type) =
   | mk_functor

@@ -78,11 +78,11 @@ end
 
 # Mutual block with type and def.
 mutual do
-  type Even
+  type Even =
     | even_zero
     | even_succ(Odd)
 
-  type Odd
+  type Odd =
     | odd_succ(Even)
 
   def is_even(n : Nat) : Bool do

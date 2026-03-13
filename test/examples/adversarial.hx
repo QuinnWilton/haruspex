@@ -64,7 +64,7 @@ def dup(x : Int) : Int do
 end
 
 # Type with many constructors.
-type Color
+type Color =
   | red
   | green
   | blue

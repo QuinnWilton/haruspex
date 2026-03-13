@@ -27,7 +27,8 @@ defmodule Haruspex.AST do
       {:hole, span}
       {:dot, span, expr, field_name}
       {:record_construct, span, name, [{atom, expr}]}
-      {:record_update, span, expr, [{atom, expr}]}
+      {:record_update, span, name | nil, expr, [{atom, expr}]}
+      {:with, span, [expr], [branch]}
 
   ## Type expressions
 
@@ -113,7 +114,8 @@ defmodule Haruspex.AST do
           | {:hole, span()}
           | {:dot, span(), expr(), atom()}
           | {:record_construct, span(), atom(), [{atom(), expr()}]}
-          | {:record_update, span(), expr(), [{atom(), expr()}]}
+          | {:record_update, span(), atom() | nil, expr(), [{atom(), expr()}]}
+          | {:with, span(), [expr()], [branch()]}
 
   @type binop ::
           :add | :sub | :mul | :div | :eq | :neq | :lt | :gt | :lte | :gte | :and | :or

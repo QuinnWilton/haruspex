@@ -6,7 +6,7 @@
 
 
 
-type Bool2
+type Bool2 =
   | true2
   | false2
 

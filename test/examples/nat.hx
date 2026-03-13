@@ -1,6 +1,6 @@
 # Natural numbers and basic arithmetic.
 
-type Nat
+type Nat =
   | zero
   | succ(Nat)
 

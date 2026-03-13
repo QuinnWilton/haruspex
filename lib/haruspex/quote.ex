@@ -22,95 +22,126 @@ defmodule Haruspex.Quote do
   At Pi types, neutrals are eta-expanded to lambdas.
   At Sigma types, neutrals are eta-expanded to pairs.
   """
-  @spec quote(Value.lvl(), Value.value(), Value.value()) :: Core.expr()
+  @spec quote(Value.lvl(), Value.value(), Value.value(), keyword()) :: Core.expr()
+
+  def quote(lvl, type, val, opts \\ [])
 
   # At Pi type: eta-expand.
-  def quote(lvl, {:vpi, mult, dom, env, cod}, val) do
+  def quote(lvl, {:vpi, mult, dom, env, cod}, val, opts) do
     arg = Value.fresh_var(lvl, dom)
     body_val = Eval.vapp(Eval.default_ctx(), val, arg)
     cod_val = Eval.eval(%{Eval.default_ctx() | env: [arg | env]}, cod)
-    {:lam, mult, quote(lvl + 1, cod_val, body_val)}
+    {:lam, mult, quote(lvl + 1, cod_val, body_val, opts)}
   end
 
   # At Sigma type: eta-expand.
-  def quote(lvl, {:vsigma, a, env, b}, val) do
+  def quote(lvl, {:vsigma, a, env, b}, val, opts) do
     fst_val = Eval.vfst(val)
     snd_val = Eval.vsnd(val)
     b_val = Eval.eval(%{Eval.default_ctx() | env: [fst_val | env]}, b)
-    {:pair, quote(lvl, a, fst_val), quote(lvl, b_val, snd_val)}
+    {:pair, quote(lvl, a, fst_val, opts), quote(lvl, b_val, snd_val, opts)}
+  end
+
+  # At record type (vdata that is a known record): eta-expand neutral to constructor.
+  def quote(lvl, {:vdata, type_name, _type_args}, {:vneutral, _, _} = val, opts) do
+    records = Keyword.get(opts, :records, %{})
+
+    case Map.fetch(records, type_name) do
+      {:ok, record_decl} ->
+        # Eta-expand: project each field from the neutral and reconstruct.
+        arity = length(record_decl.fields)
+
+        field_terms =
+          record_decl.fields
+          |> Enum.with_index()
+          |> Enum.map(fn {_field, idx} ->
+            # Build: case val of mk_R(f0,..,fn) -> f_idx
+            proj_body = {:var, arity - 1 - idx}
+
+            {:case, quote_untyped(lvl, val), [{record_decl.constructor_name, arity, proj_body}]}
+          end)
+
+        {:con, type_name, record_decl.constructor_name, field_terms}
+
+      :error ->
+        # Not a record — fall through to structural neutral readback.
+        quote_neutral(lvl, elem(val, 2))
+    end
   end
 
   # At Type: quote the value structurally (types of types).
-  def quote(lvl, {:vtype, _}, {:vpi, mult, dom, env, cod}) do
+  def quote(lvl, {:vtype, _}, {:vpi, mult, dom, env, cod}, opts) do
     arg = Value.fresh_var(lvl, dom)
     cod_val = Eval.eval(%{Eval.default_ctx() | env: [arg | env]}, cod)
 
-    {:pi, mult, quote(lvl, {:vtype, {:llit, 0}}, dom),
-     quote(lvl + 1, {:vtype, {:llit, 0}}, cod_val)}
+    {:pi, mult, quote(lvl, {:vtype, {:llit, 0}}, dom, opts),
+     quote(lvl + 1, {:vtype, {:llit, 0}}, cod_val, opts)}
   end
 
-  def quote(lvl, {:vtype, _}, {:vsigma, a, env, b}) do
+  def quote(lvl, {:vtype, _}, {:vsigma, a, env, b}, opts) do
     arg = Value.fresh_var(lvl, a)
     b_val = Eval.eval(%{Eval.default_ctx() | env: [arg | env]}, b)
-    {:sigma, quote(lvl, {:vtype, {:llit, 0}}, a), quote(lvl + 1, {:vtype, {:llit, 0}}, b_val)}
+
+    {:sigma, quote(lvl, {:vtype, {:llit, 0}}, a, opts),
+     quote(lvl + 1, {:vtype, {:llit, 0}}, b_val, opts)}
   end
 
   # Neutral at any type: structural readback.
-  def quote(lvl, _type, {:vneutral, _ne_type, ne}) do
+  def quote(lvl, _type, {:vneutral, _ne_type, ne}, _opts) do
     quote_neutral(lvl, ne)
   end
 
   # Literals.
-  def quote(_lvl, _type, {:vlit, v}) do
+  def quote(_lvl, _type, {:vlit, v}, _opts) do
     {:lit, v}
   end
 
   # Universe.
-  def quote(_lvl, _type, {:vtype, level}) do
+  def quote(_lvl, _type, {:vtype, level}, _opts) do
     {:type, level}
   end
 
   # Builtin (as a value, e.g., a type like Int).
-  def quote(_lvl, _type, {:vbuiltin, name}) when is_atom(name) do
+  def quote(_lvl, _type, {:vbuiltin, name}, _opts) when is_atom(name) do
     {:builtin, name}
   end
 
   # Partially applied builtin (shouldn't appear in normal forms, but handle gracefully).
-  def quote(lvl, _type, {:vbuiltin, {name, args}}) do
+  def quote(lvl, _type, {:vbuiltin, {name, args}}, _opts) do
     Enum.reduce(args, {:builtin, name}, fn arg, acc ->
       {:app, acc, quote_untyped(lvl, arg)}
     end)
   end
 
   # Pair (when not at Sigma type — structural).
-  def quote(lvl, _type, {:vpair, a, b}) do
+  def quote(lvl, _type, {:vpair, a, b}, _opts) do
     {:pair, quote_untyped(lvl, a), quote_untyped(lvl, b)}
   end
 
   # Lambda (when not at Pi type — shouldn't happen in well-typed terms, but handle it).
-  def quote(lvl, _type, {:vlam, mult, env, body}) do
+  def quote(lvl, _type, {:vlam, mult, env, body}, _opts) do
     arg = Value.fresh_var(lvl, {:vtype, {:llit, 0}})
     body_val = Eval.eval(%{Eval.default_ctx() | env: [arg | env]}, body)
     {:lam, mult, quote_untyped(lvl + 1, body_val)}
   end
 
   # ADT type constructor.
-  def quote(lvl, _type, {:vdata, name, args}) do
+  def quote(lvl, _type, {:vdata, name, args}, _opts) do
     {:data, name, Enum.map(args, &quote_untyped(lvl, &1))}
   end
 
   # Data constructor.
-  def quote(lvl, _type, {:vcon, type_name, con_name, args}) do
+  def quote(lvl, _type, {:vcon, type_name, con_name, args}, _opts) do
     {:con, type_name, con_name, Enum.map(args, &quote_untyped(lvl, &1))}
   end
 
   # Extern (opaque).
-  def quote(_lvl, _type, {:vextern, mod, fun, arity}) do
+  def quote(_lvl, _type, {:vextern, mod, fun, arity}, _opts) do
     {:extern, mod, fun, arity}
   end
 
   # Global cross-module reference (opaque).
-  def quote(_lvl, _type, {:vglobal, mod, name, arity}) do
+  def quote(_lvl, _type, {:vglobal, mod, name, arity}, _opts) do
     {:global, mod, name, arity}
   end
 
@@ -208,8 +239,9 @@ defmodule Haruspex.Quote do
 
   defp quote_neutral(lvl, {:ncase, ne, branches, _env}) do
     {:case, quote_neutral(lvl, ne),
-     Enum.map(branches, fn {con_name, arity, body} ->
-       {con_name, arity, body}
+     Enum.map(branches, fn
+       {:__lit, value, body} -> {:__lit, value, body}
+       {con_name, arity, body} -> {con_name, arity, body}
      end)}
   end
 end

@@ -455,6 +455,157 @@ defmodule Haruspex.ModuleTest do
   end
 
   # ============================================================================
+  # ADTs through Roux pipeline
+  # ============================================================================
+
+  describe "ADT compilation through Roux pipeline" do
+    test "type declaration with case expression compiles end-to-end" do
+      db = new_db()
+
+      set_source(db, "lib/adt_demo.hx", """
+      type Nat = zero | succ(Nat)
+
+      def is_zero(n : Nat) : Int do
+        case n do
+          zero -> 1
+          _ -> 0
+        end
+      end
+      """)
+
+      {:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, "lib/adt_demo.hx")
+
+      # Constructor functions are generated.
+      assert mod.zero() == :zero
+      assert mod.succ(:zero) == {:succ, :zero}
+
+      # Case expression works correctly.
+      assert mod.is_zero(mod.zero()) == 1
+      assert mod.is_zero(mod.succ(mod.zero())) == 0
+    after
+      purge_module(AdtDemo)
+    end
+
+    test "parameterized ADT compiles end-to-end" do
+      db = new_db()
+
+      set_source(db, "lib/opt.hx", """
+      type Option(a : Type) = none | some(a)
+
+      def unwrap_or(opt : Option(Int), default : Int) : Int do
+        case opt do
+          some(x) -> x
+          none -> default
+        end
+      end
+      """)
+
+      {:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, "lib/opt.hx")
+
+      assert mod.unwrap_or(mod.some(42), 0) == 42
+      assert mod.unwrap_or(mod.none(), 99) == 99
+    after
+      purge_module(Opt)
+    end
+
+    test "elaborate_types query returns ADT declarations" do
+      db = new_db()
+
+      set_source(db, "lib/types.hx", """
+      type Color = red | green | blue
+
+      def dummy(x : Int) : Int do x end
+      """)
+
+      # Force parse.
+      {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/types.hx")
+
+      {:ok, {adts, records}} =
+        Roux.Runtime.query(db, :haruspex_elaborate_types, "lib/types.hx")
+
+      assert Map.has_key?(adts, :Color)
+      assert length(adts[:Color].constructors) == 3
+      assert records == %{}
+    end
+
+    test "self-recursive function compiles end-to-end" do
+      db = new_db()
+
+      set_source(db, "lib/rec.hx", """
+      type Nat = zero | succ(Nat)
+
+      def to_int(n : Nat) : Int do
+        case n do
+          zero -> 0
+          succ(m) -> 1 + to_int(m)
+        end
+      end
+      """)
+
+      {:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, "lib/rec.hx")
+
+      three = mod.succ(mod.succ(mod.succ(mod.zero())))
+      assert mod.to_int(mod.zero()) == 0
+      assert mod.to_int(three) == 3
+    after
+      purge_module(Rec)
+    end
+
+    test "mutual recursion compiles end-to-end" do
+      db = new_db()
+
+      set_source(db, "lib/mutual_demo.hx", """
+      type Nat = zero | succ(Nat)
+
+      mutual do
+        def is_even(n : Nat) : Int do
+          case n do
+            zero -> 1
+            succ(m) -> is_odd(m)
+          end
+        end
+
+        def is_odd(n : Nat) : Int do
+          case n do
+            zero -> 0
+            succ(m) -> is_even(m)
+          end
+        end
+      end
+      """)
+
+      {:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, "lib/mutual_demo.hx")
+
+      two = mod.succ(mod.succ(mod.zero()))
+      three = mod.succ(two)
+
+      assert mod.is_even(two) == 1
+      assert mod.is_odd(two) == 0
+      assert mod.is_even(three) == 0
+      assert mod.is_odd(three) == 1
+    after
+      purge_module(MutualDemo)
+    end
+
+    test "if expression works through Roux pipeline" do
+      db = new_db()
+
+      set_source(db, "lib/bool_demo.hx", """
+      def choose(b : Bool, x : Int, y : Int) : Int do
+        if b do x else y end
+      end
+      """)
+
+      {:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, "lib/bool_demo.hx")
+
+      assert mod.choose(true, 10, 20) == 10
+      assert mod.choose(false, 10, 20) == 20
+    after
+      purge_module(BoolDemo)
+    end
+  end
+
+  # ============================================================================
   # Diagnostics
   # ============================================================================
 

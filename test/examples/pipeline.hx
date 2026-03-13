@@ -3,7 +3,7 @@
 import Data.List, open: true
 import Data.Option, open: [some, none]
 
-type Step(a : Type)
+type Step(a : Type) =
   | skip
   | keep(a)
 

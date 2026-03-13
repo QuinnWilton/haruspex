@@ -390,10 +390,18 @@ defmodule Haruspex.Unify do
     {:con, type_name, con_name, Enum.map(args, &rename_vars(&1, rename_map, depth))}
   end
 
+  defp rename_vars({:record_proj, field, expr}, rename_map, depth) do
+    {:record_proj, field, rename_vars(expr, rename_map, depth)}
+  end
+
   defp rename_vars({:case, scrutinee, branches}, rename_map, depth) do
     {:case, rename_vars(scrutinee, rename_map, depth),
-     Enum.map(branches, fn {con_name, arity, body} ->
-       {con_name, arity, rename_vars(body, rename_map, depth + arity)}
+     Enum.map(branches, fn
+       {:__lit, value, body} ->
+         {:__lit, value, rename_vars(body, rename_map, depth)}
+
+       {con_name, arity, body} ->
+         {con_name, arity, rename_vars(body, rename_map, depth + arity)}
      end)}
   end
 

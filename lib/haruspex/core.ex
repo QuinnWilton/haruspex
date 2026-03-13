@@ -44,6 +44,7 @@ defmodule Haruspex.Core do
           | {:data, atom(), [expr()]}
           | {:con, atom(), atom(), [expr()]}
           | {:case, expr(), [{atom(), non_neg_integer(), expr()}]}
+          | {:record_proj, atom(), expr()}
           | :erased
 
   # ============================================================================
@@ -167,11 +168,20 @@ defmodule Haruspex.Core do
     {:con, type_name, con_name, Enum.map(args, &subst(&1, target, replacement))}
   end
 
+  def subst({:record_proj, field, expr}, target, replacement) do
+    {:record_proj, field, subst(expr, target, replacement)}
+  end
+
   def subst({:case, scrutinee, branches}, target, replacement) do
     {:case, subst(scrutinee, target, replacement),
-     Enum.map(branches, fn {con_name, arity, body} ->
-       shifted_rep = Enum.reduce(1..arity//1, replacement, fn _, r -> shift(r, 1, 0) end)
-       {con_name, arity, subst(body, target + arity, shifted_rep)}
+     Enum.map(branches, fn
+       {:__lit, value, body} ->
+         # Literal branches bind 0 variables.
+         {:__lit, value, subst(body, target, replacement)}
+
+       {con_name, arity, body} ->
+         shifted_rep = Enum.reduce(1..arity//1, replacement, fn _, r -> shift(r, 1, 0) end)
+         {con_name, arity, subst(body, target + arity, shifted_rep)}
      end)}
   end
 
@@ -243,10 +253,18 @@ defmodule Haruspex.Core do
     {:con, type_name, con_name, Enum.map(args, &shift(&1, amount, cutoff))}
   end
 
+  def shift({:record_proj, field, expr}, amount, cutoff) do
+    {:record_proj, field, shift(expr, amount, cutoff)}
+  end
+
   def shift({:case, scrutinee, branches}, amount, cutoff) do
     {:case, shift(scrutinee, amount, cutoff),
-     Enum.map(branches, fn {con_name, arity, body} ->
-       {con_name, arity, shift(body, amount, cutoff + arity)}
+     Enum.map(branches, fn
+       {:__lit, value, body} ->
+         {:__lit, value, shift(body, amount, cutoff)}
+
+       {con_name, arity, body} ->
+         {con_name, arity, shift(body, amount, cutoff + arity)}
      end)}
   end
 

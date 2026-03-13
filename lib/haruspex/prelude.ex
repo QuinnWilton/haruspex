@@ -8,7 +8,7 @@ defmodule Haruspex.Prelude do
 
   ## Provided names
 
-  **Types**: `Int`, `Float`, `String`, `Atom`
+  **Types**: `Int`, `Float`, `String`, `Atom`, `Bool`
 
   **Arithmetic**: `add`, `sub`, `mul`, `div`, `neg`
 
@@ -24,6 +24,7 @@ defmodule Haruspex.Prelude do
     Float: {:builtin, :Float},
     String: {:builtin, :String},
     Atom: {:builtin, :Atom},
+    Bool: {:builtin, :Bool},
     add: {:builtin, :add},
     sub: {:builtin, :sub},
     mul: {:builtin, :mul},
