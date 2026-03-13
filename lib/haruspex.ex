@@ -18,6 +18,7 @@ defmodule Haruspex do
   use Roux.Query
 
   alias Haruspex.Definition
+  alias Haruspex.FileInfo
 
   # ============================================================================
   # Roux.Lang behaviour
@@ -54,47 +55,47 @@ defmodule Haruspex do
   definput(:source_text, durability: :low)
 
   defentity(Haruspex.Definition)
+  defentity(Haruspex.FileInfo)
   defentity(Haruspex.MutualGroup)
 
   @doc """
-  Parse a source file, creating `Definition` entities for each top-level def.
+  Parse a source file, creating `Definition` entities for each top-level def
+  and a `FileInfo` entity for file-level metadata (imports).
   Returns `{:ok, [entity_id]}`.
   """
   defquery :haruspex_parse, key: uri do
     source = Roux.Runtime.input(db, :source_text, uri)
 
     case Haruspex.Parser.parse(source) do
-      {:ok, defs} ->
-        entity_ids =
-          Enum.flat_map(defs, fn
-            {:def, span, {:sig, _sig_span, name, name_span, _params, _ret, attrs} = _sig, _body} =
-                def_ast ->
-              entity_id =
-                Roux.Runtime.create(db, Definition, %{
-                  uri: uri,
-                  name: name,
-                  surface_ast: def_ast,
-                  type: nil,
-                  body: nil,
-                  total?: Map.get(attrs, :total, false),
-                  private?: Map.get(attrs, :private, false),
-                  extern: Map.get(attrs, :extern),
-                  erased_params: nil,
-                  span: span,
-                  name_span: name_span
-                })
+      {:ok, top_level_forms} ->
+        {entity_ids, imports} = collect_top_level(db, uri, top_level_forms)
 
-              [entity_id]
-
-            # Skip non-def top-level forms for now.
-            _ ->
-              []
-          end)
+        # Store file-level metadata.
+        Roux.Runtime.create(db, FileInfo, %{uri: uri, imports: imports})
 
         {:ok, entity_ids}
 
       {:error, _} = err ->
         err
+    end
+  end
+
+  @doc """
+  Return the import declarations for a file.
+  Returns a list of `%{module_path: [atom()], open: open_option}` maps.
+  Depends on `haruspex_parse` to populate the `FileInfo` entity.
+  """
+  defquery :haruspex_file_imports, key: uri do
+    # Ensure the file has been parsed (creates the FileInfo entity).
+    {:ok, _entity_ids} = Roux.Runtime.query!(db, :haruspex_parse, uri)
+
+    # Read imports from the FileInfo entity.
+    case Roux.Runtime.lookup(db, FileInfo, {uri}) do
+      {:ok, file_info_id} ->
+        Roux.Runtime.field(db, FileInfo, file_info_id, :imports)
+
+      :error ->
+        []
     end
   end
 
@@ -218,6 +219,39 @@ defmodule Haruspex do
   # ============================================================================
   # Helpers
   # ============================================================================
+
+  # Partition top-level forms into Definition entities and import declarations.
+  @spec collect_top_level(term(), String.t(), [term()]) :: {[term()], [term()]}
+  defp collect_top_level(db, uri, forms) do
+    Enum.reduce(forms, {[], []}, fn
+      {:def, span, {:sig, _sig_span, name, name_span, _params, _ret, attrs} = _sig, _body} =
+          def_ast,
+      {ids, imports} ->
+        entity_id =
+          Roux.Runtime.create(db, Definition, %{
+            uri: uri,
+            name: name,
+            surface_ast: def_ast,
+            type: nil,
+            body: nil,
+            total?: Map.get(attrs, :total, false),
+            private?: Map.get(attrs, :private, false),
+            extern: Map.get(attrs, :extern),
+            erased_params: nil,
+            span: span,
+            name_span: name_span
+          })
+
+        {ids ++ [entity_id], imports}
+
+      {:import, _span, module_path, open_option}, {ids, imports} ->
+        {ids, imports ++ [%{module_path: module_path, open: open_option}]}
+
+      # Skip other top-level forms for now.
+      _other, acc ->
+        acc
+    end)
+  end
 
   defp find_entity(db, entity_ids, name) do
     Enum.find(entity_ids, fn entity_id ->

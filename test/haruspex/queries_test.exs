@@ -54,6 +54,79 @@ defmodule Haruspex.QueriesTest do
   end
 
   # ============================================================================
+  # File imports query
+  # ============================================================================
+
+  describe "haruspex_file_imports" do
+    test "returns empty list when no imports", %{db: db} do
+      set_source(db, "def f(x : Int) : Int do x end\n")
+
+      imports = Roux.Runtime.query(db, :haruspex_file_imports, @uri)
+      assert imports == []
+    end
+
+    test "returns import with qualified-only access", %{db: db} do
+      set_source(db, "import Math\ndef f(x : Int) : Int do x end\n")
+
+      imports = Roux.Runtime.query(db, :haruspex_file_imports, @uri)
+      assert [%{module_path: [:Math], open: nil}] = imports
+    end
+
+    test "returns import with open: true", %{db: db} do
+      set_source(db, "import Math, open: true\ndef f(x : Int) : Int do x end\n")
+
+      imports = Roux.Runtime.query(db, :haruspex_file_imports, @uri)
+      assert [%{module_path: [:Math], open: true}] = imports
+    end
+
+    test "returns import with selective open", %{db: db} do
+      set_source(db, "import Math, open: [add, sub]\ndef f(x : Int) : Int do x end\n")
+
+      imports = Roux.Runtime.query(db, :haruspex_file_imports, @uri)
+      assert [%{module_path: [:Math], open: [:add, :sub]}] = imports
+    end
+
+    test "returns multiple imports", %{db: db} do
+      set_source(db, """
+      import Math
+      import Data.Vec, open: true
+      def f(x : Int) : Int do x end
+      """)
+
+      imports = Roux.Runtime.query(db, :haruspex_file_imports, @uri)
+      assert length(imports) == 2
+
+      paths = Enum.map(imports, & &1.module_path)
+      assert [:Math] in paths
+      assert [:Data, :Vec] in paths
+    end
+
+    test "imports coexist with definitions", %{db: db} do
+      set_source(db, """
+      import Math, open: [add]
+      def f(x : Int) : Int do x end
+      def g(x : Int) : Int do x end
+      """)
+
+      {:ok, entity_ids} = Roux.Runtime.query(db, :haruspex_parse, @uri)
+      assert length(entity_ids) == 2
+
+      imports = Roux.Runtime.query(db, :haruspex_file_imports, @uri)
+      assert [%{module_path: [:Math], open: [:add]}] = imports
+    end
+
+    test "updates when source changes", %{db: db} do
+      set_source(db, "import Math\ndef f(x : Int) : Int do x end\n")
+      imports1 = Roux.Runtime.query(db, :haruspex_file_imports, @uri)
+      assert length(imports1) == 1
+
+      set_source(db, "import Math\nimport Data.Vec\ndef f(x : Int) : Int do x end\n")
+      imports2 = Roux.Runtime.query(db, :haruspex_file_imports, @uri)
+      assert length(imports2) == 2
+    end
+  end
+
+  # ============================================================================
   # Elaborate query
   # ============================================================================
 
