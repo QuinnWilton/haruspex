@@ -1,0 +1,367 @@
+<!-- playbill:{"version":"0.1.0"} -->
+
+# Tier 4: Modules & Prelude
+
+```elixir
+Mix.install([
+  {:haruspex, path: "/Users/quinn/dev/beam_box/haruspex"},
+  {:roux, path: "/Users/quinn/dev/beam_box/roux"},
+  {:pentiment, path: "/Users/quinn/dev/beam_box/pentiment"},
+  {:constrain, path: "/Users/quinn/dev/beam_box/constrain"},
+  {:quail, path: "/Users/quinn/dev/beam_box/quail"}
+])
+```
+
+Tier 4 adds **multi-module compilation** to Haruspex — file→module mapping,
+cross-module name resolution, import declarations with visibility control,
+and an auto-imported prelude that can be opted out of with `@no_prelude`.
+
+### What's new
+
+- **`FileInfo` entity** — stores imports and file-level metadata per source file
+- **`{:global, module, name, arity}`** — new core term for cross-module references
+- **Import modes** — qualified-only, `open: true`, and `open: [names]`
+- **`@private`** — visibility control for definitions
+- **`Haruspex.Prelude`** — auto-imported builtins (types + ops), opt-out via `@no_prelude`
+- **Erased param handling** — cross-module calls correctly skip zero-multiplicity params
+
+## Setup
+
+```elixir
+# Helper to create a fresh database and register haruspex.
+new_db = fn ->
+  db = Roux.Database.new()
+  Roux.Lang.register(db, Haruspex)
+  db
+end
+
+# Helper to set source text for a file URI.
+set_source = fn db, uri, source ->
+  Roux.Input.set(db, :source_text, uri, source)
+end
+
+# Helper to purge compiled modules between examples.
+purge = fn mod ->
+  :code.purge(mod)
+  :code.delete(mod)
+end
+```
+
+## Module name derivation
+
+Haruspex derives Elixir module names from file URIs by camelizing path segments
+and stripping configurable source roots.
+
+```elixir
+[
+  Haruspex.module_name_from_uri("lib/math.hx", ["lib"]),
+  Haruspex.module_name_from_uri("lib/data/vec.hx", ["lib"]),
+  Haruspex.module_name_from_uri("src/utils/string_helpers.hx", ["src"])
+]
+```
+
+## Cross-module compilation with open imports
+
+Define `inc` in module A, then import it into module B with `open: true` so
+it's available unqualified. The import creates a `{:global, MathA, :inc, 1}`
+core term that flows through elaboration, checking, erasure, and codegen.
+
+```elixir
+db = new_db.()
+
+set_source.(db, "lib/math_a.hx", """
+def add(x : Int, y : Int) : Int do x + y end
+""")
+
+set_source.(db, "lib/math_b.hx", """
+import MathA, open: true
+def double(x : Int) : Int do add(x, x) end
+""")
+
+{:ok, _} = Roux.Runtime.query(db, :haruspex_compile, "lib/math_a.hx")
+{:ok, mod_b} = Roux.Runtime.query(db, :haruspex_compile, "lib/math_b.hx")
+
+IO.puts("MathB.double(5) = #{mod_b.double(5)}")
+IO.puts("MathB.double(21) = #{mod_b.double(21)}")
+
+purge.(MathA)
+purge.(MathB)
+:ok
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+MathB.double(5) = 10
+MathB.double(21) = 42
+```
+
+## Qualified access
+
+With a plain `import` (no `open` option), names are only accessible via
+`Module.name` syntax.
+
+```elixir
+db = new_db.()
+
+set_source.(db, "lib/math_a.hx", """
+def add(x : Int, y : Int) : Int do x + y end
+""")
+
+set_source.(db, "lib/math_b.hx", """
+import MathA
+def double(x : Int) : Int do MathA.add(x, x) end
+""")
+
+{:ok, _} = Roux.Runtime.query(db, :haruspex_compile, "lib/math_a.hx")
+{:ok, mod_b} = Roux.Runtime.query(db, :haruspex_compile, "lib/math_b.hx")
+
+IO.puts("MathB.double(7) = #{mod_b.double(7)}")
+
+purge.(MathA)
+purge.(MathB)
+:ok
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+MathB.double(7) = 14
+```
+
+## Selective open imports
+
+`open: [names]` selectively exposes only the listed names unqualified.
+Names not in the list are rejected as unbound.
+
+```elixir
+db = new_db.()
+
+set_source.(db, "lib/math_a.hx", """
+def inc(x : Int) : Int do x + 1 end
+def dec(x : Int) : Int do x - 1 end
+""")
+
+set_source.(db, "lib/math_b.hx", """
+import MathA, open: [inc]
+def inc3(x : Int) : Int do inc(inc(inc(x))) end
+""")
+
+{:ok, _} = Roux.Runtime.query(db, :haruspex_compile, "lib/math_a.hx")
+{:ok, mod_b} = Roux.Runtime.query(db, :haruspex_compile, "lib/math_b.hx")
+
+IO.puts("MathB.inc3(0) = #{mod_b.inc3(0)}")
+
+# dec is NOT in the open list — it's rejected:
+set_source.(db, "lib/math_c.hx", """
+import MathA, open: [inc]
+def try_dec(x : Int) : Int do dec(x) end
+""")
+
+{:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/math_a.hx")
+result = Roux.Runtime.query(db, :haruspex_elaborate, {"lib/math_c.hx", :try_dec})
+IO.puts("dec unqualified → #{elem(result, 0)}")
+
+purge.(MathA)
+purge.(MathB)
+:ok
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+MathB.inc3(0) = 3
+dec unqualified → error
+```
+
+## Visibility: @private
+
+Definitions marked `@private` are invisible to other modules, even with `open: true`.
+
+```elixir
+db = new_db.()
+
+set_source.(db, "lib/math_a.hx", """
+def public_fn(x : Int) : Int do x + 1 end
+@private
+def secret(x : Int) : Int do x * 2 end
+""")
+
+set_source.(db, "lib/math_b.hx", """
+import MathA, open: true
+def use_public(x : Int) : Int do public_fn(x) end
+""")
+
+{:ok, _} = Roux.Runtime.query(db, :haruspex_compile, "lib/math_a.hx")
+{:ok, mod_b} = Roux.Runtime.query(db, :haruspex_compile, "lib/math_b.hx")
+IO.puts("use_public(5) = #{mod_b.use_public(5)}")
+
+# secret is not accessible even with open: true:
+set_source.(db, "lib/math_c.hx", """
+import MathA, open: true
+def use_secret(x : Int) : Int do secret(x) end
+""")
+
+{:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/math_a.hx")
+result = Roux.Runtime.query(db, :haruspex_elaborate, {"lib/math_c.hx", :use_secret})
+IO.puts("secret access → #{elem(result, 0)}")
+
+purge.(MathA)
+purge.(MathB)
+:ok
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+use_public(5) = 6
+secret access → error
+```
+
+## Three-module chain
+
+Modules can form dependency chains. Here `Top` imports `Middle` which imports
+`Arith` — each building on the previous.
+
+```elixir
+db = new_db.()
+
+set_source.(db, "lib/arith.hx", """
+def inc(x : Int) : Int do x + 1 end
+""")
+
+set_source.(db, "lib/middle.hx", """
+import Arith, open: true
+def inc2(x : Int) : Int do inc(inc(x)) end
+""")
+
+set_source.(db, "lib/top.hx", """
+import Middle, open: true
+def inc4(x : Int) : Int do inc2(inc2(x)) end
+""")
+
+{:ok, _} = Roux.Runtime.query(db, :haruspex_compile, "lib/arith.hx")
+{:ok, _} = Roux.Runtime.query(db, :haruspex_compile, "lib/middle.hx")
+{:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, "lib/top.hx")
+
+IO.puts("Top.inc4(0) = #{mod.inc4(0)}")
+IO.puts("Top.inc4(10) = #{mod.inc4(10)}")
+
+purge.(Arith)
+purge.(Middle)
+purge.(Top)
+:ok
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Top.inc4(0) = 4
+Top.inc4(10) = 14
+```
+
+## Prelude and @no_prelude
+
+The prelude auto-imports builtin types and operations. Files can opt out with
+`@no_prelude`, which makes even `Int` unavailable.
+
+```elixir
+# The prelude provides these names automatically:
+Haruspex.Prelude.names() |> Enum.sort()
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+
+```
+
+```elixir
+db = new_db.()
+
+# @no_prelude makes Int unavailable:
+set_source.(db, "lib/bare.hx", """
+@no_prelude
+def f(x : Int) : Int do x end
+""")
+
+result = Roux.Runtime.query(db, :haruspex_elaborate, {"lib/bare.hx", :f})
+IO.puts("@no_prelude → #{elem(result, 0)}")
+:ok
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+@no_prelude → error
+```
+
+## Cross-module erased params
+
+Functions with zero-multiplicity (erased) parameters work correctly across
+module boundaries. The arity excludes erased params, and the checker strips
+zero-pi prefixes when synthesizing the imported type.
+
+```elixir
+db = new_db.()
+
+set_source.(db, "lib/poly.hx", """
+def wrap(0 a : Type, x : Int) : Int do x end
+""")
+
+set_source.(db, "lib/user.hx", """
+import Poly, open: true
+def use_wrap(x : Int) : Int do wrap(x) end
+""")
+
+{:ok, _} = Roux.Runtime.query(db, :haruspex_compile, "lib/poly.hx")
+{:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, "lib/user.hx")
+
+IO.puts("use_wrap(42) = #{mod.use_wrap(42)}")
+
+purge.(Poly)
+purge.(User)
+:ok
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+use_wrap(42) = 42
+```
+
+## The {:global, ...} core term
+
+Tracing a cross-module call through the pipeline shows the `{:global, ...}` core
+term at the elaboration and erasure stages.
+
+```elixir
+db = new_db.()
+
+set_source.(db, "lib/math_a.hx", """
+def inc(x : Int) : Int do x + 1 end
+""")
+
+set_source.(db, "lib/math_b.hx", """
+import MathA, open: true
+def inc2(x : Int) : Int do inc(inc(x)) end
+""")
+
+{:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/math_a.hx")
+{:ok, {type, body}} = Roux.Runtime.query(db, :haruspex_elaborate, {"lib/math_b.hx", :inc2})
+
+IO.inspect(body, label: "elaborated")
+IO.inspect(Haruspex.Erase.erase(body, type), label: "erased")
+
+purge.(MathA)
+:ok
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+elaborated: {:lam, :omega,
+ {:app, {:global, MathA, :inc, 1}, {:app, {:global, MathA, :inc, 1}, {:var, 0}}}}
+erased: {:lam, :omega,
+ {:app, {:global, MathA, :inc, 1}, {:app, {:global, MathA, :inc, 1}, {:var, 0}}}}
+```
