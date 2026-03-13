@@ -69,6 +69,68 @@ end
 
 Patterns in branches are tupled: `p1, p2 -> body`.
 
+## Abstraction algorithm
+
+Concrete pseudocode for goal type generalization:
+
+```
+abstract_over(e : Value, e_type : Value, goal : Value, ctx) -> Core.term():
+  # Walk the goal type, replacing occurrences of e with Var(0)
+
+  walk(g):
+    # Check if this sub-value is convertible with e
+    if convert(ctx, g, e, e_type):
+      return Var(0)   # replace with the fresh variable
+
+    case g:
+      # Structural recursion — descend into sub-terms
+      Pi(mult, name, dom, cod) ->
+        dom' = walk(dom)
+        # cod is a closure — we need to instantiate it to walk inside,
+        # then re-abstract. But if e's free variables include the
+        # bound variable, abstraction fails.
+        if depends_on_bound(e, current_depth):
+          raise AbstractionFailure(e, g, "scrutinee depends on bound variable")
+        cod_body = walk(apply_closure(cod, fresh_var(current_depth)))
+        Pi(mult, name, dom', close(cod_body))
+
+      Lam(mult, name, body) ->
+        if depends_on_bound(e, current_depth):
+          raise AbstractionFailure(e, g, "scrutinee depends on bound variable")
+        body' = walk(apply_closure(body, fresh_var(current_depth)))
+        Lam(mult, name, close(body'))
+
+      App(f, a) -> App(walk(f), walk(a))
+      Data(name, args) -> Data(name, Enum.map(args, &walk/1))
+      Con(type, name, args) -> Con(type, name, Enum.map(args, &walk/1))
+
+      # Atomic values — no sub-terms to walk
+      Var(_) | Lit(_) | Type(_) -> g
+
+  abstracted_body = walk(goal)
+
+  # Wrap in a lambda: fn(w : e_type) -> abstracted_body
+  # The result is a function from the scrutinee's type to the goal type
+  Lam(:omega, :w, close(abstracted_body))
+```
+
+The result is applied to the scrutinee in each branch to specialize the goal type.
+
+## Failure conditions
+
+Abstraction fails in these specific cases:
+
+1. **Scrutinee under capturing binder**: `e` contains free variables that are bound by a lambda or Pi in the goal type. Example: goal type is `(x : A) -> P(f(x))` and scrutinee is `f(x)` — the `x` in the scrutinee is captured by the Pi binder, so we can't abstract `f(x)` out of the codomain.
+
+2. **Scrutinee in irrelevant position**: `e` appears inside an erased/zero-multiplicity argument. Abstracting over it would make a computationally irrelevant position relevant, changing the erasure semantics.
+
+3. **Conversion check ambiguity**: NbE conversion checking is used to find occurrences of `e` in the goal. If `e` is a meta-variable that hasn't been solved yet, the check may be inconclusive. In this case, defer — revisit after more unification constraints are solved, or fail with a message suggesting the user add a type annotation.
+
+Each failure produces a specific error message:
+- `"Cannot abstract: scrutinee f(x) depends on variable x bound at <span>"`
+- `"Cannot abstract: scrutinee appears in erased position"`
+- `"Cannot abstract: scrutinee type is ambiguous — add a type annotation"`
+
 ## Implementation notes
 
 - The abstraction step (step 2) can fail if `e` appears in a position that can't be generalized (e.g., under a lambda that captures variables `e` depends on). In this case, produce a clear error explaining why with-abstraction failed.

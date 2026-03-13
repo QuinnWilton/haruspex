@@ -111,10 +111,79 @@ check_positivity(mutual_group):
 
 A negative occurrence of any type in the group in any constructor field rejects the entire mutual group.
 
+## Nested positivity
+
+The simplified `check_strictly_positive` algorithm above returns `:ok` when the type name appears nested inside another type constructor. The full algorithm for nested occurrences:
+
+When the defined type `T` appears as a parameter to another type `F(... T ...)`:
+
+1. Look up `F`'s definition
+2. Identify which parameter position(s) `T` occupies
+3. Check that `F` is strictly positive in those parameter positions — meaning `T` does not appear in a negative (function domain) position within `F`'s constructor fields when traced through that parameter
+4. If `F` is not defined in the current scope (e.g., it's a type variable), reject — we can't verify positivity
+
+```
+check_strictly_positive(name, {:data, other_name, args}):
+  for {arg, param_index} <- Enum.with_index(args):
+    if mentions(name, arg):
+      # name appears in this argument — check other_name is positive in this param
+      other_decl = lookup_adt(other_name)
+      for constructor in other_decl.constructors:
+        for field_type in constructor.fields:
+          check_param_positive(name, param_index, other_decl.params, field_type)
+
+check_param_positive(name, param_index, params, field_type):
+  # Substitute `name` for the param at param_index, then check the result
+  # is strictly positive in `name`
+  param_name = Enum.at(params, param_index) |> elem(0)
+  substituted = subst(param_name, {:data, name, []}, field_type)
+  check_strictly_positive(name, substituted)
+```
+
+Example — accepted: `type Rose(a) do node(a, List(Rose(a))) end` — `List` is strictly positive in its parameter (it only appears as `cons(head, tail)`, never in a function domain).
+
+Example — rejected: `type Bad(a) do mk(F(Bad(a))) end` where `type F(a) do wrap(a -> Int) end` — `F` uses its parameter in a negative position.
+
+## GADT support
+
+GADTs (constructors with different return type indices) ARE supported. This is required for indexed types like `Vec` and `Fin`:
+
+```
+type Vec(a : Type, n : Nat) : Type do
+  vnil : Vec(a, zero)
+  vcons(x : a, rest : Vec(a, m)) : Vec(a, succ(m))
+end
+```
+
+Constructor return types may specialize the type's index parameters (here `n` becomes `zero` or `succ(m)`). The case tree compilation algorithm (d30) handles this via index unification at each split — unifying the constructor's return type with the scrutinee type to refine or eliminate branches.
+
+## Universe level computation
+
+The universe level of an ADT is determined by:
+
+1. **Parameters**: Collect the universe levels of all type parameters
+2. **Constructor fields**: Collect the universe levels of all field types across all constructors
+3. **Result**: The ADT's level is `max(param_levels ++ field_levels)`
+
+```
+compute_adt_level(decl):
+  param_levels = for {_name, kind} <- decl.params, do: universe_of(kind)
+  field_levels = for con <- decl.constructors,
+                     field <- con.fields,
+                     do: universe_of(field)
+  Enum.max(param_levels ++ field_levels, fn -> 0 end)
+```
+
+Special cases:
+- An ADT with no parameters and no fields (e.g., `type Void do end`) lives at `Type 0`
+- Type parameters of kind `Type l` contribute level `l + 1` (since `Type l : Type (l+1)`)
+- Runtime-only fields (e.g., `x : Int`) contribute level `0`
+
+For mutual inductive types, all types in the group are constrained to the same level — the max across all types in the group.
+
 ## Implementation notes
 
 - Start with simple parameterized ADTs (Option, List, Nat)
-- GADTs (where constructor return types have different indices) deferred initially
 - Universe levels for ADTs: `type T(a : Type 0) : Type 0` — the ADT lives in the same universe as its parameters
 
 ## Testing strategy

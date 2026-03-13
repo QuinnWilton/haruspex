@@ -114,6 +114,84 @@ point.x
 %{point | x: 3.0}
 ```
 
+## Update type-checking for dependent fields
+
+When updating a field that other fields depend on, the dependent fields must be re-checked. If the updated field has dependents, the user must provide new values for ALL dependent fields in the same update expression.
+
+```
+# Given:
+record Sigma(a : Type, b : a -> Type) do
+  fst : a
+  snd : b(fst)
+end
+
+# This is OK — fst has no dependents being kept:
+%{s | fst: new_val, snd: new_snd}
+
+# This is an ERROR — snd depends on fst, but snd is not provided:
+%{s | fst: new_val}
+# Error: field `snd` depends on updated field `fst` — must provide new value for `snd`
+
+# This is always OK — snd has no dependents:
+%{s | snd: new_snd}
+```
+
+The checker computes the dependency graph of fields from the telescope structure. When elaborating an update `%{r | fields...}`, it verifies that for every updated field, all fields that transitively depend on it are also present in the update.
+
+## Pattern matching syntax
+
+Records support pattern matching via the single constructor:
+
+```
+# Full pattern — all fields bound
+case p do
+  %Point{x: x, y: y} -> x + y
+end
+
+# Partial pattern — unmentioned fields are wildcards
+case p do
+  %Point{x: x} -> x    # y is implicitly _
+end
+
+# Nested patterns
+case pair do
+  %Pair{fst: %Point{x: x}, snd: s} -> x + s
+end
+```
+
+Surface `%R{f1: p1, f2: p2}` desugars to a constructor pattern `mk_R(p1, p2)` where unmentioned fields become wildcards. Field order in the pattern does not matter — the elaborator reorders to match the declaration order.
+
+## Dot syntax elaboration
+
+`r.field` elaborates to a projection function application. For each field in a record, a projection function is generated:
+
+```
+record Point do x : Float; y : Float end
+
+# Generates projections:
+Point.x : Point -> Float
+Point.x = fn(p : Point) -> case p do mk_Point(x, _) -> x end
+
+Point.y : Point -> Float
+Point.y = fn(p : Point) -> case p do mk_Point(_, y) -> y end
+```
+
+For dependent records, projection types reference the record value:
+
+```
+record Sigma(a : Type, b : a -> Type) do fst : a; snd : b(fst) end
+
+Sigma.fst : {a : Type} -> {b : a -> Type} -> Sigma(a, b) -> a
+Sigma.snd : {a : Type} -> {b : a -> Type} -> (s : Sigma(a, b)) -> b(s.fst)
+```
+
+The elaborator resolves `r.field` by:
+1. Infer the type of `r` — must be a record type `R(args...)`
+2. Look up `field` in `R`'s field list
+3. Emit `App(R.field, r)` (with implicit args inserted as needed)
+
+If `r`'s type is not a record type, or the field doesn't exist, produce an error.
+
 ## Implementation notes
 
 - Records desugar to ADTs in core but retain their record identity for error messages and codegen
