@@ -9,5 +9,5 @@ defmodule Haruspex.Definition do
 
   use Roux.Entity,
     identity: [:uri, :name],
-    tracked: [:surface_ast, :type, :body, :total?, :extern, :erased_params, :span, :name_span]
+    tracked: [:surface_ast, :type, :body, :total?, :private?, :extern, :erased_params, :span, :name_span]
 end

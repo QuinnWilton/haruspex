@@ -77,6 +77,7 @@ defmodule Haruspex do
                   type: nil,
                   body: nil,
                   total?: Map.get(attrs, :total, false),
+                  private?: Map.get(attrs, :private, false),
                   extern: Map.get(attrs, :extern),
                   erased_params: nil,
                   span: span,
@@ -232,12 +233,30 @@ defmodule Haruspex do
     Roux.Runtime.create(db, Definition, Map.merge(current, updates))
   end
 
-  defp module_name_from_uri(uri) do
-    uri
+  @doc false
+  @spec module_name_from_uri(String.t(), [String.t()]) :: module()
+  def module_name_from_uri(uri, source_roots \\ []) do
+    stripped = strip_source_root(uri, source_roots)
+
+    stripped
     |> Path.rootname()
     |> Path.split()
     |> Enum.map(&Macro.camelize/1)
     |> Module.concat()
+  end
+
+  defp strip_source_root(uri, []) do
+    uri
+  end
+
+  defp strip_source_root(uri, [root | rest]) do
+    prefix = String.trim_trailing(root, "/") <> "/"
+
+    if String.starts_with?(uri, prefix) do
+      String.trim_leading(uri, prefix)
+    else
+      strip_source_root(uri, rest)
+    end
   end
 
   @spec error_to_diagnostic(term()) :: map()

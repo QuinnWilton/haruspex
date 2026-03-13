@@ -253,6 +253,77 @@ defmodule Haruspex.QueriesTest do
 
       assert Roux.Runtime.field(db, Definition, entity_id, :erased_params) == nil
     end
+
+    test "private? defaults to false", %{db: db} do
+      set_source(db, "def f(x : Int) : Int do x end\n")
+      {:ok, [entity_id]} = Roux.Runtime.query(db, :haruspex_parse, @uri)
+
+      assert Roux.Runtime.field(db, Definition, entity_id, :private?) == false
+    end
+
+    test "private? set to true for @private definitions", %{db: db} do
+      set_source(db, "@private\ndef f(x : Int) : Int do x end\n")
+      {:ok, [entity_id]} = Roux.Runtime.query(db, :haruspex_parse, @uri)
+
+      assert Roux.Runtime.field(db, Definition, entity_id, :private?) == true
+    end
+
+    test "mixed public and private definitions", %{db: db} do
+      set_source(db, """
+      def public_fn(x : Int) : Int do x end
+      @private
+      def private_fn(x : Int) : Int do x end
+      """)
+
+      {:ok, entity_ids} = Roux.Runtime.query(db, :haruspex_parse, @uri)
+
+      privacies =
+        Enum.map(entity_ids, fn id ->
+          {Roux.Runtime.field(db, Definition, id, :name),
+           Roux.Runtime.field(db, Definition, id, :private?)}
+        end)
+
+      assert {:public_fn, false} in privacies
+      assert {:private_fn, true} in privacies
+    end
+  end
+
+  # ============================================================================
+  # Module name derivation
+  # ============================================================================
+
+  describe "module_name_from_uri" do
+    test "converts path segments to module name" do
+      assert Haruspex.module_name_from_uri("test/math.hx") == Test.Math
+    end
+
+    test "handles nested paths" do
+      assert Haruspex.module_name_from_uri("lib/data/vec.hx") == Lib.Data.Vec
+    end
+
+    test "strips source root prefix" do
+      assert Haruspex.module_name_from_uri("lib/math.hx", ["lib"]) == Math
+    end
+
+    test "strips nested source root" do
+      assert Haruspex.module_name_from_uri("lib/data/vec.hx", ["lib"]) == Data.Vec
+    end
+
+    test "tries multiple source roots" do
+      assert Haruspex.module_name_from_uri("test/math.hx", ["lib", "test"]) == Math
+    end
+
+    test "falls through when no root matches" do
+      assert Haruspex.module_name_from_uri("src/math.hx", ["lib"]) == Src.Math
+    end
+
+    test "handles trailing slash in root" do
+      assert Haruspex.module_name_from_uri("lib/math.hx", ["lib/"]) == Math
+    end
+
+    test "deeply nested path with root" do
+      assert Haruspex.module_name_from_uri("lib/data/vec/sort.hx", ["lib"]) == Data.Vec.Sort
+    end
   end
 
   # ============================================================================
