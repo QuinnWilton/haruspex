@@ -1,0 +1,355 @@
+<!-- playbill:{"version":"0.1.0"} -->
+
+# Tier 5: Pattern Matching & Dependent Case
+
+## Section
+
+```elixir
+Mix.install([
+  {:haruspex, path: "/Users/quinn/dev/beam_box/haruspex"},
+  {:roux, path: "/Users/quinn/dev/beam_box/roux"},
+  {:pentiment, path: "/Users/quinn/dev/beam_box/pentiment"},
+  {:constrain, path: "/Users/quinn/dev/beam_box/constrain"},
+  {:quail, path: "/Users/quinn/dev/beam_box/quail"}
+])
+```
+
+Tier 5 brings **production-grade pattern matching** to Haruspex — wildcard and literal
+branches, Bool as a builtin type with `if` desugaring, exhaustiveness checking,
+dependent case splitting with motive inference, self-recursion, mutual recursion,
+and goal type abstraction.
+
+### What's new
+
+* **Bool builtin** — `true`/`false` synthesize as `Bool`, not `Atom`
+* **`if` expressions** — desugar to `case` on `true`/`false` literal branches
+* **Wildcard branches** — `_ -> body` catches anything; arity-1 wildcards bind the scrutinee
+* **Literal branches** — `{:__lit, value, body}` match concrete values (integers, booleans)
+* **Exhaustiveness checking** — warns when ADT constructors are missing from a `case`
+* **Dependent case (check mode)** — motive-based checking via `abstract_over`
+* **Multi-scrutinee `with`** — desugars to nested `case` expressions
+* **Goal type abstraction** — replaces scrutinee occurrences in the goal type with a fresh variable
+* **Dependent field update validation** — record updates that break field dependencies are rejected
+* **ADTs through Roux pipeline** — type declarations, constructor codegen, case compilation
+* **Self-recursive functions** — self-reference de Bruijn variable compiled to named call
+* **Mutual recursion** — `mutual do...end` blocks with cross-recursive name resolution
+
+## Setup
+
+```elixir
+# Helper to create a fresh database and register haruspex.
+new_db = fn ->
+  db = Roux.Database.new()
+  Roux.Lang.register(db, Haruspex)
+  db
+end
+
+# Helper to set source text for a file URI.
+set_source = fn db, uri, source ->
+  Roux.Input.set(db, :source_text, uri, source)
+end
+
+# Helper to purge compiled modules between examples.
+purge = fn mod ->
+  :code.purge(mod)
+  :code.delete(mod)
+end
+```
+
+## Bool and if expressions
+
+`true` and `false` now synthesize as `Bool` (a builtin type), not `Atom`.
+The `if` expression desugars to a `case` with literal branches matching
+`true` and `false` — no special runtime support needed.
+
+```elixir
+db = new_db.()
+uri = "lib/demo.hx"
+
+set_source.(db, uri, """
+def choose(b : Bool, x : Int, y : Int) : Int do
+  if b do x else y end
+end
+""")
+
+{:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, uri)
+
+IO.puts("choose(true, 10, 20) = #{mod.choose(true, 10, 20)}")
+IO.puts("choose(false, 10, 20) = #{mod.choose(false, 10, 20)}")
+
+purge.(mod)
+:ok
+```
+
+Under the hood, `if b do x else y end` desugars to a case with literal
+`true`/`false` branches during elaboration:
+
+```elixir
+alias Haruspex.Elaborate
+
+_ = {new_db, set_source, purge}
+
+ctx = Elaborate.new()
+s = Pentiment.Span.byte(0, 1)
+ast = {:if, s, {:lit, s, true}, {:lit, s, 1}, {:lit, s, 0}}
+{:ok, core, _ctx} = Elaborate.elaborate(ctx, ast)
+
+IO.inspect(core, label: "if desugars to")
+```
+
+## ADT case expressions with wildcards
+
+Case expressions now support wildcard branches (`_ -> body`) and literal branches.
+ADTs flow through the full Roux pipeline — type declarations, constructor functions,
+and case expressions all compile end-to-end.
+
+```elixir
+db = new_db.()
+uri = "lib/demo.hx"
+
+set_source.(db, uri, """
+type Nat = zero | succ(Nat)
+
+def is_zero(n : Nat) : Int do
+  case n do
+    zero -> 1
+    _ -> 0
+  end
+end
+""")
+
+{:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, uri)
+
+zero = mod.zero()
+one = mod.succ(mod.zero())
+two = mod.succ(mod.succ(mod.zero()))
+
+IO.puts("is_zero(zero)      = #{mod.is_zero(zero)}")
+IO.puts("is_zero(succ(0))   = #{mod.is_zero(one)}")
+IO.puts("is_zero(succ^2(0)) = #{mod.is_zero(two)}")
+
+purge.(mod)
+:ok
+```
+
+## Constructor field binding
+
+Constructor patterns bind field values to variables. The `succ(n)` branch
+binds the predecessor, and `some(x)` extracts the wrapped value.
+
+```elixir
+db = new_db.()
+uri = "lib/demo.hx"
+
+set_source.(db, uri, """
+type Option(a : Type) = none | some(a)
+
+def unwrap_or(opt : Option(Int), default : Int) : Int do
+  case opt do
+    some(x) -> x
+    none -> default
+  end
+end
+""")
+
+{:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, uri)
+
+IO.puts("unwrap_or(some(42), 0) = #{mod.unwrap_or(mod.some(42), 0)}")
+IO.puts("unwrap_or(none, 99)    = #{mod.unwrap_or(mod.none(), 99)}")
+
+purge.(mod)
+:ok
+```
+
+## Self-recursive functions
+
+Self-recursive functions work through the full pipeline. The elaborator pushes
+the function's own name into scope before elaborating its body, and codegen
+replaces the self-reference de Bruijn variable with a named function call.
+
+```elixir
+db = new_db.()
+uri = "lib/demo.hx"
+
+set_source.(db, uri, """
+type Nat = zero | succ(Nat)
+
+def to_int(n : Nat) : Int do
+  case n do
+    zero -> 0
+    succ(m) -> 1 + to_int(m)
+  end
+end
+""")
+
+{:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, uri)
+
+three = mod.succ(mod.succ(mod.succ(mod.zero())))
+IO.puts("to_int(succ^3(zero)) = #{mod.to_int(three)}")
+IO.puts("to_int(zero)         = #{mod.to_int(mod.zero())}")
+
+purge.(mod)
+:ok
+```
+
+## Mutual recursion
+
+`mutual do...end` blocks let multiple definitions reference each other.
+All names are in scope during elaboration and type checking of every body
+in the group.
+
+```elixir
+db = new_db.()
+uri = "lib/demo.hx"
+
+set_source.(db, uri, """
+type Nat = zero | succ(Nat)
+
+mutual do
+  def is_even(n : Nat) : Int do
+    case n do
+      zero -> 1
+      succ(m) -> is_odd(m)
+    end
+  end
+
+  def is_odd(n : Nat) : Int do
+    case n do
+      zero -> 0
+      succ(m) -> is_even(m)
+    end
+  end
+end
+""")
+
+{:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, uri)
+
+two = mod.succ(mod.succ(mod.zero()))
+three = mod.succ(two)
+
+IO.puts("is_even(2) = #{mod.is_even(two)}")
+IO.puts("is_odd(2)  = #{mod.is_odd(two)}")
+IO.puts("is_even(3) = #{mod.is_even(three)}")
+IO.puts("is_odd(3)  = #{mod.is_odd(three)}")
+
+purge.(mod)
+:ok
+```
+
+## Exhaustiveness checking
+
+```elixir
+alias Haruspex.Pattern
+
+# Simulate an ADT with two constructors: none and some.
+adts = %{
+  :Option => %{
+    name: :Option,
+    params: [],
+    constructors: [
+      %{name: :none, fields: [], return_type: nil, span: nil},
+      %{name: :some, fields: [{:vtype, {:llit, 0}}], return_type: nil, span: nil}
+    ],
+    universe_level: {:llit, 0},
+    span: nil
+  }
+}
+scrut_type = {:vdata, :Option, []}
+
+# Branches that cover only "some" — missing "none".
+incomplete_branches = [{:some, 1, {:lit, 42}}]
+result1 = Pattern.check_exhaustiveness(adts, scrut_type, incomplete_branches)
+IO.inspect(result1, label: "missing none")
+
+# Adding a wildcard covers everything.
+with_wildcard = [{:some, 1, {:lit, 42}}, {:_, 0, {:lit, 0}}]
+result2 = Pattern.check_exhaustiveness(adts, scrut_type, with_wildcard)
+IO.inspect(result2, label: "with wildcard")
+
+# All constructors covered explicitly.
+complete = [{:none, 0, {:lit, 0}}, {:some, 1, {:lit, 42}}]
+result3 = Pattern.check_exhaustiveness(adts, scrut_type, complete)
+IO.inspect(result3, label: "fully covered")
+```
+
+## Goal type abstraction
+
+When checking a `case` expression against a goal type that mentions
+the scrutinee, `abstract_over` replaces scrutinee occurrences with a
+fresh variable, producing a motive that each branch can instantiate.
+
+```elixir
+alias Haruspex.Elaborate
+
+ctx = Elaborate.new()
+s = Pentiment.Span.byte(0, 1)
+
+# Manually push two bindings so a and b are in scope.
+ctx = %{ctx | names: [{:b, 1}, {:a, 0} | ctx.names],
+              name_list: [:a, :b | ctx.name_list],
+              level: 2}
+
+# with a, b do x -> x end → nested case.
+ast = {:with, s,
+  [{:var, s, :a}, {:var, s, :b}],
+  [{:branch, s, {:pat_var, s, :x}, {:var, s, :x}}]}
+
+{:ok, core, _ctx} = Elaborate.elaborate(ctx, ast)
+IO.inspect(core, label: "with a, b desugars to")
+```
+
+## Dependent field update validation
+
+When a record has dependent fields (a field whose type mentions an earlier
+field), updating the dependency without updating the dependent field would
+break type safety. The elaborator detects this and rejects the update.
+
+```elixir
+alias Haruspex.Elaborate
+
+s = Pentiment.Span.byte(0, 1)
+
+# A record where field "proof" (index 1) depends on field "n" (index 0).
+# proof's type is {:var, 0} — referencing field n.
+record_decl = %{
+  name: :DepPair,
+  constructor_name: :mk_dep_pair,
+  fields: [{:n, {:data, :Nat, []}}, {:proof, {:var, 0}}],
+  params: []
+}
+
+# Updating "n" without updating "proof" is rejected.
+bad_update = MapSet.new([:n])
+result = Elaborate.check_dependent_field_updates(record_decl, bad_update, s)
+IO.inspect(result, label: "update n only")
+
+# Updating both is fine.
+good_update = MapSet.new([:n, :proof])
+result2 = Elaborate.check_dependent_field_updates(record_decl, good_update, s)
+IO.inspect(result2, label: "update both")
+
+# Updating only "proof" is fine — it doesn't break any dependencies.
+proof_only = MapSet.new([:proof])
+result3 = Elaborate.check_dependent_field_updates(record_decl, proof_only, s)
+IO.inspect(result3, label: "update proof only")
+```
+
+## Summary
+
+| Feature                        | Status | Pipeline                 |
+| ------------------------------ | ------ | ------------------------ |
+| Bool builtin + `if` desugaring | Done   | Full (parse → codegen) |
+| Wildcard branches              | Done   | Full                     |
+| Literal branches               | Done   | Full                     |
+| ADT type declarations          | Done   | Full (Roux wired)        |
+| Constructor field binding      | Done   | Full                     |
+| Self-recursive functions       | Done   | Full                     |
+| Mutual recursion               | Done   | Full (Roux wired)        |
+| Exhaustiveness checking        | Done   | Pattern module           |
+| Goal type abstraction          | Done   | Pattern module           |
+| Multi-scrutinee `with`         | Done   | Elaborate desugaring     |
+| Dependent field validation     | Done   | Elaborate                |
+
+All features compile through the full pipeline (parse → elaborate → check →
+erase → codegen) and produce working BEAM modules via the Roux incremental
+computation framework.

@@ -2,6 +2,8 @@
 
 # Tier 4: Modules & Prelude
 
+## Section
+
 ```elixir
 Mix.install([
   {:haruspex, path: "/Users/quinn/dev/beam_box/haruspex"},
@@ -18,12 +20,12 @@ and an auto-imported prelude that can be opted out of with `@no_prelude`.
 
 ### What's new
 
-- **`FileInfo` entity** — stores imports and file-level metadata per source file
-- **`{:global, module, name, arity}`** — new core term for cross-module references
-- **Import modes** — qualified-only, `open: true`, and `open: [names]`
-- **`@private`** — visibility control for definitions
-- **`Haruspex.Prelude`** — auto-imported builtins (types + ops), opt-out via `@no_prelude`
-- **Erased param handling** — cross-module calls correctly skip zero-multiplicity params
+* **`FileInfo` entity** — stores imports and file-level metadata per source file
+* **`{:global, module, name, arity}`** — new core term for cross-module references
+* **Import modes** — qualified-only, `open: true`, and `open: [names]`
+* **`@private`** — visibility control for definitions
+* **`Haruspex.Prelude`** — auto-imported builtins (types + ops), opt-out via `@no_prelude`
+* **Erased param handling** — cross-module calls correctly skip zero-multiplicity params
 
 ## Setup
 
@@ -89,13 +91,6 @@ purge.(MathB)
 :ok
 ```
 
-<!-- livebook:{"output":true} -->
-
-```
-MathB.double(5) = 10
-MathB.double(21) = 42
-```
-
 ## Qualified access
 
 With a plain `import` (no `open` option), names are only accessible via
@@ -121,12 +116,6 @@ IO.puts("MathB.double(7) = #{mod_b.double(7)}")
 purge.(MathA)
 purge.(MathB)
 :ok
-```
-
-<!-- livebook:{"output":true} -->
-
-```
-MathB.double(7) = 14
 ```
 
 ## Selective open imports
@@ -167,13 +156,6 @@ purge.(MathB)
 :ok
 ```
 
-<!-- livebook:{"output":true} -->
-
-```
-MathB.inc3(0) = 3
-dec unqualified → error
-```
-
 ## Visibility: @private
 
 Definitions marked `@private` are invisible to other modules, even with `open: true`.
@@ -211,13 +193,6 @@ purge.(MathB)
 :ok
 ```
 
-<!-- livebook:{"output":true} -->
-
-```
-use_public(5) = 6
-secret access → error
-```
-
 ## Three-module chain
 
 Modules can form dependency chains. Here `Top` imports `Middle` which imports
@@ -253,13 +228,6 @@ purge.(Top)
 :ok
 ```
 
-<!-- livebook:{"output":true} -->
-
-```
-Top.inc4(0) = 4
-Top.inc4(10) = 14
-```
-
 ## Prelude and @no_prelude
 
 The prelude auto-imports builtin types and operations. Files can opt out with
@@ -268,12 +236,6 @@ The prelude auto-imports builtin types and operations. Files can opt out with
 ```elixir
 # The prelude provides these names automatically:
 Haruspex.Prelude.names() |> Enum.sort()
-```
-
-<!-- livebook:{"output":true} -->
-
-```
-
 ```
 
 ```elixir
@@ -288,12 +250,6 @@ def f(x : Int) : Int do x end
 result = Roux.Runtime.query(db, :haruspex_elaborate, {"lib/bare.hx", :f})
 IO.puts("@no_prelude → #{elem(result, 0)}")
 :ok
-```
-
-<!-- livebook:{"output":true} -->
-
-```
-@no_prelude → error
 ```
 
 ## Cross-module erased params
@@ -324,12 +280,6 @@ purge.(User)
 :ok
 ```
 
-<!-- livebook:{"output":true} -->
-
-```
-use_wrap(42) = 42
-```
-
 ## The {:global, ...} core term
 
 Tracing a cross-module call through the pipeline shows the `{:global, ...}` core
@@ -355,13 +305,4 @@ IO.inspect(Haruspex.Erase.erase(body, type), label: "erased")
 
 purge.(MathA)
 :ok
-```
-
-<!-- livebook:{"output":true} -->
-
-```
-elaborated: {:lam, :omega,
- {:app, {:global, MathA, :inc, 1}, {:app, {:global, MathA, :inc, 1}, {:var, 0}}}}
-erased: {:lam, :omega,
- {:app, {:global, MathA, :inc, 1}, {:app, {:global, MathA, :inc, 1}, {:var, 0}}}}
 ```
