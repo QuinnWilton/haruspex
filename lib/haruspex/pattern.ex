@@ -113,15 +113,9 @@ defmodule Haruspex.Pattern do
           Value.lvl()
         ) :: {:ok, Haruspex.Core.expr()}
   def abstract_over(scrutinee_val, goal_type, meta_state, lvl) do
-    # Quote the goal type back to core, then walk the core term replacing
-    # sub-expressions that match the scrutinee.
     goal_core = Quote.quote_untyped(lvl, goal_type)
     scrutinee_core = Quote.quote_untyped(lvl, scrutinee_val)
-
-    case abstract_core(goal_core, scrutinee_core, meta_state, lvl) do
-      {:error, _} = err -> err
-      abstracted -> {:ok, abstracted}
-    end
+    {:ok, abstract_core(goal_core, scrutinee_core, meta_state, lvl)}
   end
 
   @doc false
@@ -130,26 +124,14 @@ defmodule Haruspex.Pattern do
           Haruspex.Core.expr(),
           Unify.MetaState.t(),
           Value.lvl()
-        ) :: {:ok, Haruspex.Core.expr()} | {:error, term()}
+        ) :: {:ok, Haruspex.Core.expr()}
   def abstract_core_term(goal_core, scrutinee_core, meta_state, lvl) do
-    case abstract_core(goal_core, scrutinee_core, meta_state, lvl) do
-      {:error, _} = err -> err
-      result -> {:ok, result}
-    end
-  end
-
-  # Wrap abstract_core to return {:ok, result} | {:error, reason} for use in with chains.
-  defp wrap_abstract(term, target, ms, lvl) do
-    case abstract_core(term, target, ms, lvl) do
-      {:error, _} = err -> err
-      result -> {:ok, result}
-    end
+    {:ok, abstract_core(goal_core, scrutinee_core, meta_state, lvl)}
   end
 
   # Walk a core term, replacing occurrences of `target` with {:var, 0}
   # (shifted appropriately under binders).
   defp abstract_core(term, target, ms, lvl) do
-    # First check if the whole term is convertible with the target.
     if core_convertible?(term, target, ms, lvl) do
       {:var, 0}
     else
@@ -159,180 +141,78 @@ defmodule Haruspex.Pattern do
 
   defp abstract_subterms({:pi, mult, dom, cod}, target, ms, lvl) do
     shifted_target = Haruspex.Core.shift(target, 1, 0)
-
-    with {:ok, dom2} <- wrap_abstract(dom, target, ms, lvl),
-         :ok <- check_binder_capture(shifted_target, target),
-         {:ok, cod2} <- wrap_abstract(cod, shifted_target, ms, lvl + 1) do
-      {:pi, mult, dom2, cod2}
-    end
+    dom2 = abstract_core(dom, target, ms, lvl)
+    cod2 = abstract_core(cod, shifted_target, ms, lvl + 1)
+    {:pi, mult, dom2, cod2}
   end
 
   defp abstract_subterms({:sigma, a, b}, target, ms, lvl) do
     shifted_target = Haruspex.Core.shift(target, 1, 0)
-
-    with {:ok, a2} <- wrap_abstract(a, target, ms, lvl),
-         :ok <- check_binder_capture(shifted_target, target),
-         {:ok, b2} <- wrap_abstract(b, shifted_target, ms, lvl + 1) do
-      {:sigma, a2, b2}
-    end
+    a2 = abstract_core(a, target, ms, lvl)
+    b2 = abstract_core(b, shifted_target, ms, lvl + 1)
+    {:sigma, a2, b2}
   end
 
   defp abstract_subterms({:app, f, a}, target, ms, lvl) do
-    with {:ok, f2} <- wrap_abstract(f, target, ms, lvl),
-         {:ok, a2} <- wrap_abstract(a, target, ms, lvl) do
-      {:app, f2, a2}
-    end
+    {:app, abstract_core(f, target, ms, lvl), abstract_core(a, target, ms, lvl)}
   end
 
   defp abstract_subterms({:lam, mult, body}, target, ms, lvl) do
     shifted_target = Haruspex.Core.shift(target, 1, 0)
-
-    with :ok <- check_binder_capture(shifted_target, target),
-         {:ok, body2} <- wrap_abstract(body, shifted_target, ms, lvl + 1) do
-      {:lam, mult, body2}
-    end
+    {:lam, mult, abstract_core(body, shifted_target, ms, lvl + 1)}
   end
 
   defp abstract_subterms({:let, def_val, body}, target, ms, lvl) do
     shifted_target = Haruspex.Core.shift(target, 1, 0)
-
-    with {:ok, def2} <- wrap_abstract(def_val, target, ms, lvl),
-         :ok <- check_binder_capture(shifted_target, target),
-         {:ok, body2} <- wrap_abstract(body, shifted_target, ms, lvl + 1) do
-      {:let, def2, body2}
-    end
+    def2 = abstract_core(def_val, target, ms, lvl)
+    body2 = abstract_core(body, shifted_target, ms, lvl + 1)
+    {:let, def2, body2}
   end
 
   defp abstract_subterms({:pair, a, b}, target, ms, lvl) do
-    with {:ok, a2} <- wrap_abstract(a, target, ms, lvl),
-         {:ok, b2} <- wrap_abstract(b, target, ms, lvl) do
-      {:pair, a2, b2}
-    end
+    {:pair, abstract_core(a, target, ms, lvl), abstract_core(b, target, ms, lvl)}
   end
 
   defp abstract_subterms({:fst, e}, target, ms, lvl) do
-    with {:ok, e2} <- wrap_abstract(e, target, ms, lvl), do: {:fst, e2}
+    {:fst, abstract_core(e, target, ms, lvl)}
   end
 
   defp abstract_subterms({:snd, e}, target, ms, lvl) do
-    with {:ok, e2} <- wrap_abstract(e, target, ms, lvl), do: {:snd, e2}
+    {:snd, abstract_core(e, target, ms, lvl)}
   end
 
   defp abstract_subterms({:data, name, args}, target, ms, lvl) do
-    case abstract_list(args, target, ms, lvl) do
-      {:error, _} = err -> err
-      args2 -> {:data, name, args2}
-    end
+    {:data, name, Enum.map(args, &abstract_core(&1, target, ms, lvl))}
   end
 
   defp abstract_subterms({:con, tn, cn, args}, target, ms, lvl) do
-    case abstract_list(args, target, ms, lvl) do
-      {:error, _} = err -> err
-      args2 -> {:con, tn, cn, args2}
-    end
+    {:con, tn, cn, Enum.map(args, &abstract_core(&1, target, ms, lvl))}
   end
 
   defp abstract_subterms({:record_proj, field, expr}, target, ms, lvl) do
-    with {:ok, e2} <- wrap_abstract(expr, target, ms, lvl), do: {:record_proj, field, e2}
+    {:record_proj, field, abstract_core(expr, target, ms, lvl)}
   end
 
   defp abstract_subterms({:case, scrut, branches}, target, ms, lvl) do
-    with {:ok, scrut2} <- wrap_abstract(scrut, target, ms, lvl) do
-      case abstract_branches(branches, target, ms, lvl) do
-        {:error, _} = err -> err
-        branches2 -> {:case, scrut2, branches2}
-      end
-    end
+    scrut2 = abstract_core(scrut, target, ms, lvl)
+
+    branches2 =
+      Enum.map(branches, fn
+        {:__lit, value, body} ->
+          {:__lit, value, abstract_core(body, target, ms, lvl)}
+
+        {tag, arity, body} ->
+          shifted =
+            Enum.reduce(1..arity//1, target, fn _, t -> Haruspex.Core.shift(t, 1, 0) end)
+
+          {tag, arity, abstract_core(body, shifted, ms, lvl + arity)}
+      end)
+
+    {:case, scrut2, branches2}
   end
 
   # Leaves: var, lit, builtin, type, extern, global, meta, erased, spanned.
   defp abstract_subterms(term, _target, _ms, _lvl), do: term
-
-  defp abstract_list(terms, target, ms, lvl) do
-    Enum.reduce_while(terms, [], fn term, acc ->
-      case abstract_core(term, target, ms, lvl) do
-        {:error, _} = err -> {:halt, err}
-        result -> {:cont, [result | acc]}
-      end
-    end)
-    |> case do
-      {:error, _} = err -> err
-      results -> Enum.reverse(results)
-    end
-  end
-
-  defp abstract_branches(branches, target, ms, lvl) do
-    Enum.reduce_while(branches, [], fn branch, acc ->
-      case abstract_branch(branch, target, ms, lvl) do
-        {:error, _} = err -> {:halt, err}
-        result -> {:cont, [result | acc]}
-      end
-    end)
-    |> case do
-      {:error, _} = err -> err
-      results -> Enum.reverse(results)
-    end
-  end
-
-  defp abstract_branch({:__lit, value, body}, target, ms, lvl) do
-    case abstract_core(body, target, ms, lvl) do
-      {:error, _} = err -> err
-      body2 -> {:__lit, value, body2}
-    end
-  end
-
-  defp abstract_branch({tag, arity, body}, target, ms, lvl) do
-    shifted = Enum.reduce(1..arity//1, target, fn _, t -> Haruspex.Core.shift(t, 1, 0) end)
-
-    case abstract_core(body, shifted, ms, lvl + arity) do
-      {:error, _} = err -> err
-      body2 -> {tag, arity, body2}
-    end
-  end
-
-  # Check whether the scrutinee depends on a variable that is being bound.
-  # After shifting, if the shifted target contains {:var, 0}, the scrutinee
-  # references the bound variable — abstraction fails.
-  defp check_binder_capture(shifted_target, original_target) do
-    if mentions_var_zero?(shifted_target) and not mentions_var_zero?(original_target) do
-      {:error, {:abstraction_failure, :scrutinee_captures_bound_variable}}
-    else
-      :ok
-    end
-  end
-
-  defp mentions_var_zero?({:var, 0}), do: true
-  defp mentions_var_zero?({:var, _}), do: false
-  defp mentions_var_zero?({:lit, _}), do: false
-  defp mentions_var_zero?({:builtin, _}), do: false
-  defp mentions_var_zero?({:type, _}), do: false
-  defp mentions_var_zero?({:meta, _}), do: false
-  defp mentions_var_zero?({:erased}), do: false
-
-  defp mentions_var_zero?({:pi, _, dom, cod}),
-    do: mentions_var_zero?(dom) or mentions_var_zero?(cod)
-
-  defp mentions_var_zero?({:sigma, a, b}), do: mentions_var_zero?(a) or mentions_var_zero?(b)
-  defp mentions_var_zero?({:app, f, a}), do: mentions_var_zero?(f) or mentions_var_zero?(a)
-  defp mentions_var_zero?({:lam, _, body}), do: mentions_var_zero?(body)
-  defp mentions_var_zero?({:let, d, b}), do: mentions_var_zero?(d) or mentions_var_zero?(b)
-  defp mentions_var_zero?({:pair, a, b}), do: mentions_var_zero?(a) or mentions_var_zero?(b)
-  defp mentions_var_zero?({:fst, e}), do: mentions_var_zero?(e)
-  defp mentions_var_zero?({:snd, e}), do: mentions_var_zero?(e)
-
-  defp mentions_var_zero?({:data, _, args}), do: Enum.any?(args, &mentions_var_zero?/1)
-  defp mentions_var_zero?({:con, _, _, args}), do: Enum.any?(args, &mentions_var_zero?/1)
-  defp mentions_var_zero?({:record_proj, _, e}), do: mentions_var_zero?(e)
-
-  defp mentions_var_zero?({:case, scrut, branches}) do
-    mentions_var_zero?(scrut) or
-      Enum.any?(branches, fn
-        {:__lit, _, body} -> mentions_var_zero?(body)
-        {_, _, body} -> mentions_var_zero?(body)
-      end)
-  end
-
-  defp mentions_var_zero?(_), do: false
 
   # Check if two core terms are syntactically equal (simple structural comparison).
   # For a more precise check, we could evaluate both and use NbE conversion,
