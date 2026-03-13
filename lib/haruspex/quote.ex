@@ -94,6 +94,16 @@ defmodule Haruspex.Quote do
     {:lam, mult, quote_untyped(lvl + 1, body_val)}
   end
 
+  # ADT type constructor.
+  def quote(lvl, _type, {:vdata, name, args}) do
+    {:data, name, Enum.map(args, &quote_untyped(lvl, &1))}
+  end
+
+  # Data constructor.
+  def quote(lvl, _type, {:vcon, type_name, con_name, args}) do
+    {:con, type_name, con_name, Enum.map(args, &quote_untyped(lvl, &1))}
+  end
+
   # Extern (opaque).
   def quote(_lvl, _type, {:vextern, mod, fun, arity}) do
     {:extern, mod, fun, arity}
@@ -123,6 +133,14 @@ defmodule Haruspex.Quote do
   def quote_untyped(_lvl, {:vbuiltin, name}) when is_atom(name), do: {:builtin, name}
   def quote_untyped(_lvl, {:vextern, mod, fun, arity}), do: {:extern, mod, fun, arity}
   def quote_untyped(_lvl, {:vglobal, mod, name, arity}), do: {:global, mod, name, arity}
+
+  def quote_untyped(lvl, {:vdata, name, args}) do
+    {:data, name, Enum.map(args, &quote_untyped(lvl, &1))}
+  end
+
+  def quote_untyped(lvl, {:vcon, type_name, con_name, args}) do
+    {:con, type_name, con_name, Enum.map(args, &quote_untyped(lvl, &1))}
+  end
 
   def quote_untyped(lvl, {:vbuiltin, {name, args}}) do
     Enum.reduce(args, {:builtin, name}, fn arg, acc ->
@@ -186,5 +204,12 @@ defmodule Haruspex.Quote do
 
   defp quote_neutral(_lvl, {:nbuiltin, name}) do
     {:builtin, name}
+  end
+
+  defp quote_neutral(lvl, {:ncase, ne, branches, _env}) do
+    {:case, quote_neutral(lvl, ne),
+     Enum.map(branches, fn {con_name, arity, body} ->
+       {con_name, arity, body}
+     end)}
   end
 end

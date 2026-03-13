@@ -28,6 +28,8 @@ defmodule Haruspex.Value do
           | {:vbuiltin, atom() | {atom(), [value()]}}
           | {:vextern, module(), atom(), arity()}
           | {:vneutral, value(), neutral()}
+          | {:vdata, atom(), [value()]}
+          | {:vcon, atom(), atom(), [value()]}
 
   @type neutral ::
           {:nvar, lvl()}
@@ -37,6 +39,7 @@ defmodule Haruspex.Value do
           | {:nmeta, Core.meta_id()}
           | {:ndef, atom(), [value()]}
           | {:nbuiltin, atom()}
+          | {:ncase, neutral(), [{atom(), non_neg_integer(), Core.expr()}], env()}
 
   # ============================================================================
   # Constructors
@@ -83,6 +86,12 @@ defmodule Haruspex.Value do
 
   @spec nmeta(Core.meta_id()) :: neutral()
   def nmeta(id), do: {:nmeta, id}
+
+  @spec vdata(atom(), [value()]) :: value()
+  def vdata(name, args), do: {:vdata, name, args}
+
+  @spec vcon(atom(), atom(), [value()]) :: value()
+  def vcon(type_name, con_name, args), do: {:vcon, type_name, con_name, args}
 
   # ============================================================================
   # Variable creation

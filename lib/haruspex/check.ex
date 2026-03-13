@@ -38,14 +38,15 @@ defmodule Haruspex.Check do
           | {:universe_error, String.t()}
 
   @enforce_keys [:context, :names, :meta_state]
-  defstruct [:context, :names, :meta_state, :db, hole_reports: []]
+  defstruct [:context, :names, :meta_state, :db, hole_reports: [], adts: %{}]
 
   @type t :: %__MODULE__{
           context: Context.t(),
           names: [atom()],
           meta_state: MetaState.t(),
           db: term() | nil,
-          hole_reports: [hole_report()]
+          hole_reports: [hole_report()],
+          adts: %{atom() => Haruspex.ADT.adt_decl()}
         }
 
   # ============================================================================
@@ -184,6 +185,110 @@ defmodule Haruspex.Check do
         _ ->
           {:error, {:not_a_pair, e_type}}
       end
+    end
+  end
+
+  # ADT type constructor.
+  def synth(ctx, {:data, name, args}) do
+    case Map.fetch(ctx.adts, name) do
+      {:ok, decl} ->
+        # Check each arg and build the applied data type.
+        {arg_terms, ctx} =
+          Enum.reduce(args, {[], ctx}, fn arg, {acc, ctx} ->
+            case synth(ctx, arg) do
+              {:ok, term, _type, ctx} -> {[term | acc], ctx}
+            end
+          end)
+
+        arg_terms = Enum.reverse(arg_terms)
+        {:ok, {:data, name, arg_terms}, {:vtype, decl.universe_level}, ctx}
+
+      :error ->
+        # Unknown ADT — treat as Type 0 if not registered.
+        {:ok, {:data, name, args}, {:vtype, {:llit, 0}}, ctx}
+    end
+  end
+
+  # Data constructor.
+  def synth(ctx, {:con, type_name, con_name, args}) do
+    case Map.fetch(ctx.adts, type_name) do
+      {:ok, decl} ->
+        con_type_core = Haruspex.ADT.constructor_type(decl, con_name)
+        con_type_val = eval_in(ctx, con_type_core)
+
+        # Apply the constructor type to all args (both implicit and explicit).
+        # For now, we only have explicit args — implicit param insertion will
+        # be handled by the full elaboration pipeline.
+        {checked_args, result_type, ctx} =
+          Enum.reduce(args, {[], con_type_val, ctx}, fn arg, {acc, fun_type, ctx} ->
+            fun_type = MetaState.force(ctx.meta_state, fun_type)
+
+            case fun_type do
+              {:vpi, _mult, dom, env, cod} ->
+                case check(ctx, arg, dom) do
+                  {:ok, arg_term, ctx} ->
+                    arg_val = eval_in(ctx, arg_term)
+                    cod_val = Eval.eval(make_eval_ctx(ctx, [arg_val | env]), cod)
+                    {[arg_term | acc], cod_val, ctx}
+                end
+
+              _ ->
+                # Overapplied? Just accumulate.
+                case synth(ctx, arg) do
+                  {:ok, arg_term, _type, ctx} -> {[arg_term | acc], fun_type, ctx}
+                end
+            end
+          end)
+
+        {:ok, {:con, type_name, con_name, Enum.reverse(checked_args)}, result_type, ctx}
+
+      :error ->
+        # Unknown ADT — synthesize args structurally.
+        {checked_args, ctx} =
+          Enum.reduce(args, {[], ctx}, fn arg, {acc, ctx} ->
+            case synth(ctx, arg) do
+              {:ok, term, _type, ctx} -> {[term | acc], ctx}
+            end
+          end)
+
+        {:ok, {:con, type_name, con_name, Enum.reverse(checked_args)}, {:vdata, type_name, []},
+         ctx}
+    end
+  end
+
+  # Case expression.
+  def synth(ctx, {:case, scrutinee, branches}) do
+    with {:ok, scrut_term, scrut_type, ctx} <- synth(ctx, scrutinee) do
+      _scrut_type = MetaState.force(ctx.meta_state, scrut_type)
+
+      # Type check each branch. The return type is the type of the first branch.
+      {checked_branches, result_type, ctx} =
+        Enum.reduce(branches, {[], nil, ctx}, fn {con_name, arity, body}, {acc, ret_type, ctx} ->
+          # Extend context with constructor field bindings.
+          # For now, use a placeholder type for each field. Full dependent
+          # matching with index refinement comes in tier5-pattern-matching.
+          inner_ctx =
+            Enum.reduce(1..arity//1, ctx, fn _, c ->
+              extend_ctx(c, :_field, {:vtype, {:llit, 0}}, :omega)
+            end)
+
+          case synth(inner_ctx, body) do
+            {:ok, body_term, body_type, inner_ctx} ->
+              ctx = restore_ctx(ctx, inner_ctx)
+
+              ret =
+                if ret_type == nil do
+                  body_type
+                else
+                  ret_type
+                end
+
+              {[{con_name, arity, body_term} | acc], ret, ctx}
+          end
+        end)
+
+      result_type = result_type || {:vtype, {:llit, 0}}
+      {:ok, {:case, scrut_term, Enum.reverse(checked_branches)}, result_type, ctx}
     end
   end
 
@@ -495,6 +600,19 @@ defmodule Haruspex.Check do
 
   def zonk(ms, level, {:spanned, span, inner}),
     do: {:spanned, span, zonk(ms, level, inner)}
+
+  def zonk(ms, level, {:data, name, args}),
+    do: {:data, name, Enum.map(args, &zonk(ms, level, &1))}
+
+  def zonk(ms, level, {:con, type_name, con_name, args}),
+    do: {:con, type_name, con_name, Enum.map(args, &zonk(ms, level, &1))}
+
+  def zonk(ms, level, {:case, scrutinee, branches}),
+    do:
+      {:case, zonk(ms, level, scrutinee),
+       Enum.map(branches, fn {cn, arity, body} ->
+         {cn, arity, zonk(ms, level + arity, body)}
+       end)}
 
   def zonk(_ms, _level, term), do: term
 

@@ -119,6 +119,30 @@ defmodule Haruspex.Erase do
     {:snd, erased}
   end
 
+  # Data type reference: type-level, erase.
+  defp check({:data, _, _}, _, _ctx), do: :erased
+
+  # Constructor: erase type args (they're implicit/zero-mult), keep field args.
+  defp check({:con, type_name, con_name, args}, _type, ctx) do
+    # All constructor args at this level are runtime fields (type params were
+    # already stripped during elaboration via zero-mult application).
+    {:con, type_name, con_name, Enum.map(args, fn a -> synth_and_erase(a, ctx) end)}
+  end
+
+  # Case: erase scrutinee and branch bodies.
+  defp check({:case, scrutinee, branches}, _type, ctx) do
+    {erased_scrut, _scrut_type} = synth(scrutinee, ctx)
+
+    {:case, erased_scrut,
+     Enum.map(branches, fn {con_name, arity, body} ->
+       # Each branch binds `arity` constructor field variables.
+       # We push placeholder types for them (exact types don't matter for erasure structure).
+       inner_ctx = Enum.reduce(1..arity//1, ctx, fn _, c -> push(c, {:type, {:llit, 0}}) end)
+       {erased_body, _body_type} = synth(body, inner_ctx)
+       {con_name, arity, erased_body}
+     end)}
+  end
+
   # Structural: pass through unchanged.
   defp check({:var, ix}, _type, _ctx), do: {:var, ix}
   defp check({:lit, v}, _type, _ctx), do: {:lit, v}
@@ -224,6 +248,42 @@ defmodule Haruspex.Erase do
   defp synth({:sigma, _, _}, _ctx), do: {:erased, {:type, {:llit, 0}}}
   defp synth({:type, l}, _ctx), do: {:erased, {:type, {:lsucc, l}}}
 
+  # Data type: type-level.
+  defp synth({:data, _, _}, _ctx), do: {:erased, {:type, {:llit, 0}}}
+
+  # Constructor: keep field args, return the data type.
+  defp synth({:con, type_name, con_name, args}, ctx) do
+    erased_args = Enum.map(args, fn a -> synth_and_erase(a, ctx) end)
+    # The return type is the data type (we don't track exact applied type in erasure).
+    {{:con, type_name, con_name, erased_args}, {:data, type_name, []}}
+  end
+
+  # Case: erase scrutinee and branches.
+  defp synth({:case, scrutinee, branches}, ctx) do
+    {erased_scrut, _scrut_type} = synth(scrutinee, ctx)
+
+    erased_branches =
+      Enum.map(branches, fn {con_name, arity, body} ->
+        inner_ctx = Enum.reduce(1..arity//1, ctx, fn _, c -> push(c, {:type, {:llit, 0}}) end)
+        {erased_body, _body_type} = synth(body, inner_ctx)
+        {con_name, arity, erased_body}
+      end)
+
+    # Use the type of the first branch body as the result type.
+    result_type =
+      case branches do
+        [{_cn, arity, body} | _] ->
+          inner_ctx = Enum.reduce(1..arity//1, ctx, fn _, c -> push(c, {:type, {:llit, 0}}) end)
+          {_erased, body_type} = synth(body, inner_ctx)
+          body_type
+
+        [] ->
+          {:type, {:llit, 0}}
+      end
+
+    {{:case, erased_scrut, erased_branches}, result_type}
+  end
+
   # Unsolved metas in synth mode.
   defp synth({:meta, id}, _ctx) do
     raise Haruspex.CompilerBug, "unsolved meta #{id} reached erasure"
@@ -236,6 +296,12 @@ defmodule Haruspex.Erase do
   # ============================================================================
   # Helpers
   # ============================================================================
+
+  # Synth a term and return just the erased form.
+  defp synth_and_erase(term, ctx) do
+    {erased, _type} = synth(term, ctx)
+    erased
+  end
 
   defp push(%__MODULE__{types: types} = ctx, type) do
     %{ctx | types: [type | types]}

@@ -126,8 +126,47 @@ defmodule Haruspex.Eval do
     end)
   end
 
+  def eval(ctx, {:data, name, args}) do
+    {:vdata, name, Enum.map(args, &eval(ctx, &1))}
+  end
+
+  def eval(ctx, {:con, type_name, con_name, args}) do
+    {:vcon, type_name, con_name, Enum.map(args, &eval(ctx, &1))}
+  end
+
+  def eval(ctx, {:case, scrutinee, branches}) do
+    vcase(ctx, eval(ctx, scrutinee), branches)
+  end
+
   def eval(ctx, {:spanned, _span, inner}) do
     eval(ctx, inner)
+  end
+
+  # ============================================================================
+  # Case reduction
+  # ============================================================================
+
+  @doc """
+  Reduce a case expression. If the scrutinee is a constructor, find the
+  matching branch and evaluate the body with constructor args in scope.
+  If the scrutinee is neutral, produce a stuck case.
+  """
+  @spec vcase(eval_ctx(), Value.value(), [{atom(), non_neg_integer(), Core.expr()}]) ::
+          Value.value()
+  def vcase(ctx, {:vcon, _type_name, con_name, con_args}, branches) do
+    case Enum.find(branches, fn {name, _arity, _body} -> name == con_name end) do
+      {_name, _arity, body} ->
+        # Extend the environment with constructor arguments (most recent first).
+        env = Enum.reverse(con_args) ++ ctx.env
+        eval(%{ctx | env: env}, body)
+
+      nil ->
+        raise Haruspex.CompilerBug, "no branch for constructor #{con_name} in case expression"
+    end
+  end
+
+  def vcase(ctx, {:vneutral, type, ne}, branches) do
+    {:vneutral, type, {:ncase, ne, branches, ctx.env}}
   end
 
   # ============================================================================

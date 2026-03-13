@@ -189,6 +189,12 @@ defmodule Haruspex.Unify do
 
       {:vextern, _, _, _} ->
         false
+
+      {:vdata, _, args} ->
+        Enum.any?(args, &occurs_in?(ms, meta_id, &1))
+
+      {:vcon, _, _, args} ->
+        Enum.any?(args, &occurs_in?(ms, meta_id, &1))
     end
   end
 
@@ -201,6 +207,7 @@ defmodule Haruspex.Unify do
       {:nsnd, head} -> occurs_in_neutral?(ms, meta_id, head)
       {:ndef, _, args} -> Enum.any?(args, &occurs_in?(ms, meta_id, &1))
       {:nbuiltin, _} -> false
+      {:ncase, head, _branches, _env} -> occurs_in_neutral?(ms, meta_id, head)
     end
   end
 
@@ -250,6 +257,12 @@ defmodule Haruspex.Unify do
 
       {:vextern, _, _, _} ->
         true
+
+      {:vdata, _, args} ->
+        Enum.all?(args, &scope_ok?(&1, allowed_levels))
+
+      {:vcon, _, _, args} ->
+        Enum.all?(args, &scope_ok?(&1, allowed_levels))
     end
   end
 
@@ -275,6 +288,9 @@ defmodule Haruspex.Unify do
 
       {:nbuiltin, _} ->
         true
+
+      {:ncase, head, _branches, _env} ->
+        scope_ok_neutral?(head, allowed_levels)
     end
   end
 
@@ -366,6 +382,21 @@ defmodule Haruspex.Unify do
     {:spanned, span, rename_vars(inner, rename_map, depth)}
   end
 
+  defp rename_vars({:data, name, args}, rename_map, depth) do
+    {:data, name, Enum.map(args, &rename_vars(&1, rename_map, depth))}
+  end
+
+  defp rename_vars({:con, type_name, con_name, args}, rename_map, depth) do
+    {:con, type_name, con_name, Enum.map(args, &rename_vars(&1, rename_map, depth))}
+  end
+
+  defp rename_vars({:case, scrutinee, branches}, rename_map, depth) do
+    {:case, rename_vars(scrutinee, rename_map, depth),
+     Enum.map(branches, fn {con_name, arity, body} ->
+       {con_name, arity, rename_vars(body, rename_map, depth + arity)}
+     end)}
+  end
+
   defp rename_vars(term, _rename_map, _depth)
        when elem(term, 0) in [:type, :lit, :builtin, :extern, :meta, :inserted_meta] do
     term
@@ -424,6 +455,34 @@ defmodule Haruspex.Unify do
       # Builtin vs Builtin.
       {{:vbuiltin, n1}, {:vbuiltin, n2}} ->
         if n1 == n2, do: {:ok, ms}, else: {:error, {:mismatch, lhs, rhs}}
+
+      # Data vs Data (ADT type constructors).
+      {{:vdata, n1, args1}, {:vdata, n2, args2}} ->
+        if n1 == n2 and length(args1) == length(args2) do
+          Enum.zip(args1, args2)
+          |> Enum.reduce_while({:ok, ms}, fn {a1, a2}, {:ok, ms_acc} ->
+            case unify(ms_acc, lvl, a1, a2) do
+              {:ok, _} = ok -> {:cont, ok}
+              err -> {:halt, err}
+            end
+          end)
+        else
+          {:error, {:mismatch, lhs, rhs}}
+        end
+
+      # Con vs Con (data constructors).
+      {{:vcon, t1, c1, args1}, {:vcon, t2, c2, args2}} ->
+        if t1 == t2 and c1 == c2 and length(args1) == length(args2) do
+          Enum.zip(args1, args2)
+          |> Enum.reduce_while({:ok, ms}, fn {a1, a2}, {:ok, ms_acc} ->
+            case unify(ms_acc, lvl, a1, a2) do
+              {:ok, _} = ok -> {:cont, ok}
+              err -> {:halt, err}
+            end
+          end)
+        else
+          {:error, {:mismatch, lhs, rhs}}
+        end
 
       # Extern vs Extern.
       {{:vextern, m1, f1, a1}, {:vextern, m2, f2, a2}} ->

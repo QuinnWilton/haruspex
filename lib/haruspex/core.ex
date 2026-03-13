@@ -159,6 +159,22 @@ defmodule Haruspex.Core do
 
   def subst(:erased, _target, _replacement), do: :erased
 
+  def subst({:data, name, args}, target, replacement) do
+    {:data, name, Enum.map(args, &subst(&1, target, replacement))}
+  end
+
+  def subst({:con, type_name, con_name, args}, target, replacement) do
+    {:con, type_name, con_name, Enum.map(args, &subst(&1, target, replacement))}
+  end
+
+  def subst({:case, scrutinee, branches}, target, replacement) do
+    {:case, subst(scrutinee, target, replacement),
+     Enum.map(branches, fn {con_name, arity, body} ->
+       shifted_rep = Enum.reduce(1..arity//1, replacement, fn _, r -> shift(r, 1, 0) end)
+       {con_name, arity, subst(body, target + arity, shifted_rep)}
+     end)}
+  end
+
   def subst(term, _target, _replacement)
       when elem(term, 0) in [:type, :lit, :builtin, :extern, :global, :meta, :inserted_meta] do
     term
@@ -218,6 +234,21 @@ defmodule Haruspex.Core do
   end
 
   def shift(:erased, _amount, _cutoff), do: :erased
+
+  def shift({:data, name, args}, amount, cutoff) do
+    {:data, name, Enum.map(args, &shift(&1, amount, cutoff))}
+  end
+
+  def shift({:con, type_name, con_name, args}, amount, cutoff) do
+    {:con, type_name, con_name, Enum.map(args, &shift(&1, amount, cutoff))}
+  end
+
+  def shift({:case, scrutinee, branches}, amount, cutoff) do
+    {:case, shift(scrutinee, amount, cutoff),
+     Enum.map(branches, fn {con_name, arity, body} ->
+       {con_name, arity, shift(body, amount, cutoff + arity)}
+     end)}
+  end
 
   def shift(term, _amount, _cutoff)
       when elem(term, 0) in [:type, :lit, :builtin, :extern, :global, :meta, :inserted_meta] do

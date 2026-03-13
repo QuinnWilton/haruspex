@@ -236,6 +236,53 @@ defmodule Haruspex.Codegen do
     end
   end
 
+  # Constructor with no fields: compile to atom.
+  defp compile({:con, _type_name, con_name, []}, _names) do
+    con_name
+  end
+
+  # Constructor with fields: compile to tagged tuple.
+  defp compile({:con, _type_name, con_name, args}, names) do
+    compiled_args = Enum.map(args, &compile(&1, names))
+
+    quote do
+      {unquote(con_name), unquote_splicing(compiled_args)}
+    end
+  end
+
+  # Case expression: compile to Elixir case.
+  defp compile({:case, scrutinee, branches}, names) do
+    compiled_scrut = compile(scrutinee, names)
+
+    compiled_branches =
+      Enum.map(branches, fn {con_name, arity, body} ->
+        # Generate variable names for constructor fields.
+        {field_names, field_vars} =
+          Enum.reduce(1..arity//1, {[], []}, fn _, {ns, vs} ->
+            var_name = fresh_name(names ++ ns)
+            var = Macro.var(var_name, __MODULE__)
+            {ns ++ [var_name], vs ++ [var]}
+          end)
+
+        inner_names = Enum.reverse(field_names) ++ names
+        compiled_body = compile(body, inner_names)
+
+        # Build pattern: atom for zero-arity, tagged tuple otherwise.
+        pattern =
+          if arity == 0 do
+            con_name
+          else
+            quote do
+              {unquote(con_name), unquote_splicing(field_vars)}
+            end
+          end
+
+        {:->, [], [[pattern], compiled_body]}
+      end)
+
+    {:case, [], [compiled_scrut, [do: compiled_branches]]}
+  end
+
   # Erased: should not appear in output positions. Emit nil as a safe default.
   defp compile(:erased, _names), do: nil
 

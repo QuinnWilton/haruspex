@@ -38,7 +38,8 @@ defmodule Haruspex.Elaborate do
     :db,
     :uri,
     :imports,
-    :source_roots
+    :source_roots,
+    :adts
   ]
   defstruct [
     :names,
@@ -52,7 +53,8 @@ defmodule Haruspex.Elaborate do
     :db,
     :uri,
     :imports,
-    :source_roots
+    :source_roots,
+    :adts
   ]
 
   @type import_info :: %{
@@ -72,7 +74,8 @@ defmodule Haruspex.Elaborate do
           db: term() | nil,
           uri: String.t() | nil,
           imports: [import_info()],
-          source_roots: [String.t()]
+          source_roots: [String.t()],
+          adts: %{atom() => Haruspex.ADT.adt_decl()}
         }
 
   # ============================================================================
@@ -104,7 +107,8 @@ defmodule Haruspex.Elaborate do
       db: Keyword.get(opts, :db),
       uri: Keyword.get(opts, :uri),
       imports: Keyword.get(opts, :imports, []),
-      source_roots: Keyword.get(opts, :source_roots, [])
+      source_roots: Keyword.get(opts, :source_roots, []),
+      adts: Keyword.get(opts, :adts, %{})
     }
   end
 
@@ -121,6 +125,8 @@ defmodule Haruspex.Elaborate do
       {:builtin, core} -> {:ok, core, ctx}
       {:bound, ix} -> {:ok, {:var, ix}, ctx}
       {:global, core} -> {:ok, core, ctx}
+      {:constructor, type_name, con_name} -> {:ok, {:con, type_name, con_name, []}, ctx}
+      {:adt_type, type_name} -> {:ok, {:data, type_name, []}, ctx}
       :not_found -> {:error, {:unbound_variable, name, span}}
     end
   end
@@ -131,7 +137,18 @@ defmodule Haruspex.Elaborate do
 
   def elaborate(ctx, {:app, _span, func, args}) do
     with {:ok, func_core, ctx} <- elaborate(ctx, func) do
-      elaborate_app_args(ctx, func_core, args)
+      case func_core do
+        {:con, type_name, con_name, []} ->
+          # Constructor application: elaborate args and build a Con term.
+          elaborate_con_args(ctx, type_name, con_name, args)
+
+        {:data, type_name, []} ->
+          # ADT type application: e.g., Option(Int).
+          elaborate_data_args(ctx, type_name, args)
+
+        _ ->
+          elaborate_app_args(ctx, func_core, args)
+      end
     end
   end
 
@@ -191,6 +208,12 @@ defmodule Haruspex.Elaborate do
   def elaborate(ctx, {:dot, span, {:var, _span2, module_name}, field_name}) do
     # Qualified access: Module.field
     resolve_qualified(ctx, [module_name], field_name, span)
+  end
+
+  def elaborate(ctx, {:case, _span, scrutinee, branches}) do
+    with {:ok, scrut_core, ctx} <- elaborate(ctx, scrutinee) do
+      elaborate_case_branches(ctx, scrut_core, branches)
+    end
   end
 
   def elaborate(_ctx, {:if, span, _cond, _then_branch, _else_branch}) do
@@ -347,6 +370,99 @@ defmodule Haruspex.Elaborate do
   end
 
   @doc """
+  Elaborate a type declaration into an ADT declaration and register it.
+
+  Returns `{:ok, adt_decl, ctx}` with the ADT registered in the context
+  so that constructor names are resolvable.
+  """
+  @spec elaborate_type_decl(t(), term()) ::
+          {:ok, Haruspex.ADT.adt_decl(), t()} | {:error, elab_error()}
+  def elaborate_type_decl(ctx, {:type_decl, span, name, type_params, constructors}) do
+    # Pre-register the type name with a placeholder so constructors can reference it.
+    # This allows recursive types like `type Nat | zero | succ(Nat)`.
+    placeholder_decl = %{
+      name: name,
+      params: [],
+      constructors: [],
+      universe_level: {:llit, 0},
+      span: span
+    }
+
+    ctx = %{ctx | adts: Map.put(ctx.adts, name, placeholder_decl)}
+
+    # Elaborate type parameters.
+    {elab_params, inner_ctx} =
+      Enum.reduce(type_params, {[], ctx}, fn {param_name, kind_expr}, {acc, c} ->
+        {:ok, kind_core, c} = elaborate_type(c, kind_expr)
+        c = push_binding(c, param_name)
+        {[{param_name, kind_core} | acc], c}
+      end)
+
+    elab_params = Enum.reverse(elab_params)
+    n_params = length(elab_params)
+
+    # Elaborate constructors.
+    elab_cons =
+      Enum.map(constructors, fn {:constructor, con_span, con_name, field_types, return_type} ->
+        elab_fields =
+          Enum.map(field_types, fn ft ->
+            {:ok, core, _} = elaborate_type(inner_ctx, ft)
+            core
+          end)
+
+        elab_return =
+          case return_type do
+            nil ->
+              # Default: data type applied to param variables.
+              args =
+                Enum.map((n_params - 1)..0//-1, fn i ->
+                  {:var, i}
+                end)
+
+              {:data, name, args}
+
+            rt ->
+              {:ok, core, _} = elaborate_type(inner_ctx, rt)
+              core
+          end
+
+        %{
+          name: con_name,
+          fields: elab_fields,
+          return_type: elab_return,
+          span: con_span
+        }
+      end)
+
+    ctx = restore_bindings(ctx, inner_ctx)
+
+    decl = %{
+      name: name,
+      params: elab_params,
+      constructors: elab_cons,
+      universe_level: {:llit, 0},
+      span: span
+    }
+
+    # Compute universe level.
+    level = Haruspex.ADT.compute_level(decl)
+    decl = %{decl | universe_level: level}
+
+    # Register the ADT so constructor names resolve.
+    ctx = register_adt(ctx, decl)
+
+    {:ok, decl, ctx}
+  end
+
+  @doc """
+  Register an ADT declaration in the elaboration context.
+  """
+  @spec register_adt(t(), Haruspex.ADT.adt_decl()) :: t()
+  def register_adt(ctx, decl) do
+    %{ctx | adts: Map.put(ctx.adts, decl.name, decl)}
+  end
+
+  @doc """
   Register auto-implicit declarations in the elaboration context.
   """
   @spec register_implicits(t(), term()) :: t()
@@ -357,11 +473,91 @@ defmodule Haruspex.Elaborate do
   end
 
   # ============================================================================
+  # Internal — case elaboration
+  # ============================================================================
+
+  @spec elaborate_case_branches(t(), Core.expr(), [term()]) ::
+          {:ok, Core.expr(), t()} | {:error, elab_error()}
+  defp elaborate_case_branches(ctx, scrut_core, branches) do
+    elaborated =
+      Enum.reduce_while(branches, {:ok, [], ctx}, fn
+        {:branch, _span, pattern, body}, {:ok, acc, ctx} ->
+          case elaborate_branch(ctx, pattern, body) do
+            {:ok, branch, ctx} -> {:cont, {:ok, [branch | acc], ctx}}
+            {:error, _} = err -> {:halt, err}
+          end
+      end)
+
+    case elaborated do
+      {:ok, rev_branches, ctx} ->
+        {:ok, {:case, scrut_core, Enum.reverse(rev_branches)}, ctx}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp elaborate_branch(ctx, {:pat_constructor, _span, con_name, sub_patterns}, body) do
+    # Look up which ADT this constructor belongs to.
+    arity = length(sub_patterns)
+
+    # Bind pattern variables.
+    {inner_ctx, _var_names} =
+      Enum.reduce(sub_patterns, {ctx, []}, fn
+        {:pat_var, _span, var_name}, {c, names} ->
+          {push_binding(c, var_name), [var_name | names]}
+
+        {:pat_wildcard, _span}, {c, names} ->
+          {push_binding(c, :_), [:_ | names]}
+
+        {:pat_lit, _span, _value}, {c, names} ->
+          # Literal sub-patterns in constructors: treat as a binding for now.
+          {push_binding(c, :_), [:_ | names]}
+      end)
+
+    with {:ok, body_core, inner_ctx} <- elaborate(inner_ctx, body) do
+      ctx = restore_bindings(ctx, inner_ctx)
+      {:ok, {con_name, arity, body_core}, ctx}
+    end
+  end
+
+  defp elaborate_branch(ctx, {:pat_var, _span, var_name}, body) do
+    # Wildcard/variable pattern: arity 0 catch-all. We wrap in a single binding.
+    inner_ctx = push_binding(ctx, var_name)
+
+    with {:ok, body_core, inner_ctx} <- elaborate(inner_ctx, body) do
+      ctx = restore_bindings(ctx, inner_ctx)
+      # Represent as a special catch-all. Use :_ as the constructor name.
+      {:ok, {:_, 1, body_core}, ctx}
+    end
+  end
+
+  defp elaborate_branch(ctx, {:pat_wildcard, _span}, body) do
+    inner_ctx = push_binding(ctx, :_)
+
+    with {:ok, body_core, inner_ctx} <- elaborate(inner_ctx, body) do
+      ctx = restore_bindings(ctx, inner_ctx)
+      {:ok, {:_, 1, body_core}, ctx}
+    end
+  end
+
+  defp elaborate_branch(ctx, {:pat_lit, _span, value}, body) do
+    with {:ok, body_core, ctx} <- elaborate(ctx, body) do
+      {:ok, {:__lit, value, body_core}, ctx}
+    end
+  end
+
+  # ============================================================================
   # Internal — name resolution
   # ============================================================================
 
   @spec resolve_name(t(), atom()) ::
-          {:builtin, Core.expr()} | {:bound, Core.ix()} | {:global, Core.expr()} | :not_found
+          {:builtin, Core.expr()}
+          | {:bound, Core.ix()}
+          | {:global, Core.expr()}
+          | {:adt_type, atom()}
+          | {:constructor, atom(), atom()}
+          | :not_found
   defp resolve_name(ctx, name) do
     # 1. Check prelude (builtins) first.
     case Map.fetch(ctx.prelude, name) do
@@ -375,10 +571,32 @@ defmodule Haruspex.Elaborate do
             {:bound, ctx.level - bound_level - 1}
 
           :error ->
-            # 3. Check imported names (open imports).
-            resolve_imported_name(ctx, name)
+            # 3. Check ADT type names.
+            case Map.fetch(ctx.adts, name) do
+              {:ok, _decl} ->
+                {:adt_type, name}
+
+              :error ->
+                # 4. Check ADT constructor names.
+                case find_constructor(ctx.adts, name) do
+                  {:ok, type_name} ->
+                    {:constructor, type_name, name}
+
+                  :error ->
+                    # 5. Check imported names (open imports).
+                    resolve_imported_name(ctx, name)
+                end
+            end
         end
     end
+  end
+
+  defp find_constructor(adts, name) do
+    Enum.find_value(adts, :error, fn {type_name, decl} ->
+      if Enum.any?(decl.constructors, &(&1.name == name)) do
+        {:ok, type_name}
+      end
+    end)
   end
 
   # Resolve an unqualified name from open imports.
@@ -530,6 +748,46 @@ defmodule Haruspex.Elaborate do
   # ============================================================================
   # Internal — application arguments
   # ============================================================================
+
+  @spec elaborate_data_args(t(), atom(), [term()]) ::
+          {:ok, Core.expr(), t()} | {:error, elab_error()}
+  defp elaborate_data_args(ctx, type_name, args) do
+    elaborated =
+      Enum.reduce_while(args, {:ok, [], ctx}, fn arg, {:ok, acc, ctx} ->
+        case elaborate(ctx, arg) do
+          {:ok, arg_core, ctx} -> {:cont, {:ok, [arg_core | acc], ctx}}
+          {:error, _} = err -> {:halt, err}
+        end
+      end)
+
+    case elaborated do
+      {:ok, rev_args, ctx} ->
+        {:ok, {:data, type_name, Enum.reverse(rev_args)}, ctx}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @spec elaborate_con_args(t(), atom(), atom(), [term()]) ::
+          {:ok, Core.expr(), t()} | {:error, elab_error()}
+  defp elaborate_con_args(ctx, type_name, con_name, args) do
+    elaborated =
+      Enum.reduce_while(args, {:ok, [], ctx}, fn arg, {:ok, acc, ctx} ->
+        case elaborate(ctx, arg) do
+          {:ok, arg_core, ctx} -> {:cont, {:ok, [arg_core | acc], ctx}}
+          {:error, _} = err -> {:halt, err}
+        end
+      end)
+
+    case elaborated do
+      {:ok, rev_args, ctx} ->
+        {:ok, {:con, type_name, con_name, Enum.reverse(rev_args)}, ctx}
+
+      {:error, _} = err ->
+        err
+    end
+  end
 
   @spec elaborate_app_args(t(), Core.expr(), [term()]) ::
           {:ok, Core.expr(), t()} | {:error, elab_error()}
