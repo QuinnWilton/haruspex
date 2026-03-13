@@ -34,6 +34,7 @@ defmodule Haruspex.Elaborate do
     :holes,
     :auto_implicits,
     :next_level_var,
+    :prelude,
     :db,
     :uri,
     :imports,
@@ -47,6 +48,7 @@ defmodule Haruspex.Elaborate do
     :holes,
     :auto_implicits,
     :next_level_var,
+    :prelude,
     :db,
     :uri,
     :imports,
@@ -66,40 +68,12 @@ defmodule Haruspex.Elaborate do
           holes: [hole_info()],
           auto_implicits: %{atom() => term()},
           next_level_var: non_neg_integer(),
+          prelude: %{atom() => {:builtin, atom()}},
           db: term() | nil,
           uri: String.t() | nil,
           imports: [import_info()],
           source_roots: [String.t()]
         }
-
-  # ============================================================================
-  # Builtins
-  # ============================================================================
-
-  @builtins %{
-    Int: {:builtin, :Int},
-    Float: {:builtin, :Float},
-    String: {:builtin, :String},
-    Atom: {:builtin, :Atom},
-    add: {:builtin, :add},
-    sub: {:builtin, :sub},
-    mul: {:builtin, :mul},
-    div: {:builtin, :div},
-    neg: {:builtin, :neg},
-    not: {:builtin, :not},
-    eq: {:builtin, :eq},
-    neq: {:builtin, :neq},
-    lt: {:builtin, :lt},
-    gt: {:builtin, :gt},
-    lte: {:builtin, :lte},
-    gte: {:builtin, :gte},
-    and: {:builtin, :and},
-    or: {:builtin, :or},
-    fadd: {:builtin, :fadd},
-    fsub: {:builtin, :fsub},
-    fmul: {:builtin, :fmul},
-    fdiv: {:builtin, :fdiv}
-  }
 
   # ============================================================================
   # Construction
@@ -108,12 +82,16 @@ defmodule Haruspex.Elaborate do
   @doc """
   Create an empty elaboration context.
 
-  Accepts an optional keyword list with `:db`, `:uri`, `:imports`, and
-  `:source_roots` for cross-module resolution. When omitted, import
-  resolution is disabled (standalone elaboration).
+  Accepts an optional keyword list with `:db`, `:uri`, `:imports`,
+  `:source_roots`, and `:no_prelude?` for cross-module resolution and
+  prelude configuration. When omitted, import resolution is disabled
+  (standalone elaboration) and the prelude is loaded by default.
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
+    no_prelude? = Keyword.get(opts, :no_prelude?, false)
+    prelude = if no_prelude?, do: %{}, else: Haruspex.Prelude.builtins()
+
     %__MODULE__{
       names: [],
       name_list: [],
@@ -122,6 +100,7 @@ defmodule Haruspex.Elaborate do
       holes: [],
       auto_implicits: %{},
       next_level_var: 0,
+      prelude: prelude,
       db: Keyword.get(opts, :db),
       uri: Keyword.get(opts, :uri),
       imports: Keyword.get(opts, :imports, []),
@@ -354,7 +333,7 @@ defmodule Haruspex.Elaborate do
       |> Enum.filter(fn {var_name, _span} ->
         Map.has_key?(ctx.auto_implicits, var_name) and
           not MapSet.member?(param_names, var_name) and
-          not Map.has_key?(@builtins, var_name) and
+          not Map.has_key?(ctx.prelude, var_name) and
           not MapSet.member?(ctx_names, var_name)
       end)
       |> Enum.map(fn {var_name, var_span} ->
@@ -384,8 +363,8 @@ defmodule Haruspex.Elaborate do
   @spec resolve_name(t(), atom()) ::
           {:builtin, Core.expr()} | {:bound, Core.ix()} | {:global, Core.expr()} | :not_found
   defp resolve_name(ctx, name) do
-    # 1. Check builtins first.
-    case Map.fetch(@builtins, name) do
+    # 1. Check prelude (builtins) first.
+    case Map.fetch(ctx.prelude, name) do
       {:ok, core} ->
         {:builtin, core}
 

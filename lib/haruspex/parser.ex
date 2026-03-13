@@ -240,11 +240,20 @@ defmodule Haruspex.Parser do
   # ============================================================================
 
   defp parse_at_toplevel(state) do
-    # Peek past @ to see if this is @implicit or an annotation on def.
+    # Peek past @ to see if this is @implicit, @no_prelude, or an annotation on def.
     case peek2(state) do
       {:ident, _, :implicit} -> parse_implicit_decl(state)
+      {:ident, _, :no_prelude} -> parse_no_prelude(state)
       _ -> parse_annotated_def(state)
     end
+  end
+
+  defp parse_no_prelude(state) do
+    {_, start_span, _} = peek(state)
+    state = advance(state)
+    {_, end_span, _} = peek(state)
+    state = advance(state)
+    {:ok, {:no_prelude, merge(start_span, end_span)}, state}
   end
 
   defp parse_annotated_def(state) do

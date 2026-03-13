@@ -68,10 +68,14 @@ defmodule Haruspex do
 
     case Haruspex.Parser.parse(source) do
       {:ok, top_level_forms} ->
-        {entity_ids, imports} = collect_top_level(db, uri, top_level_forms)
+        {entity_ids, imports, no_prelude?} = collect_top_level(db, uri, top_level_forms)
 
         # Store file-level metadata.
-        Roux.Runtime.create(db, FileInfo, %{uri: uri, imports: imports})
+        Roux.Runtime.create(db, FileInfo, %{
+          uri: uri,
+          imports: imports,
+          no_prelude?: no_prelude?
+        })
 
         {:ok, entity_ids}
 
@@ -109,15 +113,17 @@ defmodule Haruspex do
     entity_id = find_entity(db, entity_ids, name)
     def_ast = Roux.Runtime.field(db, Definition, entity_id, :surface_ast)
 
-    # Load imports for cross-module resolution.
+    # Load file-level metadata for cross-module resolution and prelude.
     imports = Roux.Runtime.query(db, :haruspex_file_imports, uri)
+    no_prelude? = file_no_prelude?(db, uri)
 
     ctx =
       Haruspex.Elaborate.new(
         db: db,
         uri: uri,
         imports: imports,
-        source_roots: source_roots()
+        source_roots: source_roots(),
+        no_prelude?: no_prelude?
       )
 
     case Haruspex.Elaborate.elaborate_def(ctx, def_ast) do
@@ -239,13 +245,14 @@ defmodule Haruspex do
   # Helpers
   # ============================================================================
 
-  # Partition top-level forms into Definition entities and import declarations.
-  @spec collect_top_level(term(), String.t(), [term()]) :: {[term()], [term()]}
+  # Partition top-level forms into Definition entities, import declarations,
+  # and file-level flags.
+  @spec collect_top_level(term(), String.t(), [term()]) :: {[term()], [term()], boolean()}
   defp collect_top_level(db, uri, forms) do
-    Enum.reduce(forms, {[], []}, fn
+    Enum.reduce(forms, {[], [], false}, fn
       {:def, span, {:sig, _sig_span, name, name_span, _params, _ret, attrs} = _sig, _body} =
           def_ast,
-      {ids, imports} ->
+      {ids, imports, no_prelude?} ->
         entity_id =
           Roux.Runtime.create(db, Definition, %{
             uri: uri,
@@ -261,15 +268,28 @@ defmodule Haruspex do
             name_span: name_span
           })
 
-        {ids ++ [entity_id], imports}
+        {ids ++ [entity_id], imports, no_prelude?}
 
-      {:import, _span, module_path, open_option}, {ids, imports} ->
-        {ids, imports ++ [%{module_path: module_path, open: open_option}]}
+      {:import, _span, module_path, open_option}, {ids, imports, no_prelude?} ->
+        {ids, imports ++ [%{module_path: module_path, open: open_option}], no_prelude?}
+
+      {:no_prelude, _span}, {ids, imports, _no_prelude?} ->
+        {ids, imports, true}
 
       # Skip other top-level forms for now.
       _other, acc ->
         acc
     end)
+  end
+
+  defp file_no_prelude?(db, uri) do
+    case Roux.Runtime.lookup(db, FileInfo, {uri}) do
+      {:ok, file_info_id} ->
+        Roux.Runtime.field(db, FileInfo, file_info_id, :no_prelude?) || false
+
+      :error ->
+        false
+    end
   end
 
   defp find_entity(db, entity_ids, name) do

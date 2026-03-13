@@ -127,6 +127,51 @@ defmodule Haruspex.QueriesTest do
   end
 
   # ============================================================================
+  # Prelude and @no_prelude
+  # ============================================================================
+
+  describe "prelude" do
+    test "builtin types are available by default", %{db: db} do
+      set_source(db, "def f(x : Int) : Int do x end\n")
+
+      {:ok, {type_core, _body_core}} =
+        Roux.Runtime.query(db, :haruspex_elaborate, {@uri, :f})
+
+      assert {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}} = type_core
+    end
+
+    test "builtin operations are available by default", %{db: db} do
+      set_source(db, "def f(x : Int, y : Int) : Int do x + y end\n")
+
+      {:ok, {_type_core, _body_core}} =
+        Roux.Runtime.query(db, :haruspex_elaborate, {@uri, :f})
+    end
+
+    test "@no_prelude disables builtin names", %{db: db} do
+      set_source(db, "@no_prelude\ndef f(x : Int) : Int do x end\n")
+
+      result = Roux.Runtime.query(db, :haruspex_elaborate, {@uri, :f})
+      assert {:error, {:unbound_variable, :Int, _}} = result
+    end
+
+    test "@no_prelude is stored in FileInfo", %{db: db} do
+      set_source(db, "@no_prelude\ndef f(x : Int) : Int do x end\n")
+      {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, @uri)
+
+      {:ok, file_info_id} = Roux.Runtime.lookup(db, Haruspex.FileInfo, {@uri})
+      assert Roux.Runtime.field(db, Haruspex.FileInfo, file_info_id, :no_prelude?) == true
+    end
+
+    test "no_prelude? defaults to false", %{db: db} do
+      set_source(db, "def f(x : Int) : Int do x end\n")
+      {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, @uri)
+
+      {:ok, file_info_id} = Roux.Runtime.lookup(db, Haruspex.FileInfo, {@uri})
+      assert Roux.Runtime.field(db, Haruspex.FileInfo, file_info_id, :no_prelude?) == false
+    end
+  end
+
+  # ============================================================================
   # Elaborate query
   # ============================================================================
 
