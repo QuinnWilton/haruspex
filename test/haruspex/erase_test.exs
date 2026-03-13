@@ -691,4 +691,107 @@ defmodule Haruspex.EraseTest do
   defp erase_with_ctx(term, type, types) do
     Erase.erase(term, type, %Erase{types: types})
   end
+
+  # ============================================================================
+  # Coverage: global reference through erasure
+  # ============================================================================
+
+  describe "global reference erasure" do
+    test "global passes through in check mode" do
+      term = {:global, MyMod, :my_fun, 2}
+      type = {:pi, :omega, {:builtin, :Int}, {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}}
+
+      result = Erase.erase(term, type)
+      assert result == {:global, MyMod, :my_fun, 2}
+    end
+
+    test "global in synth mode synthesizes omega pi type from arity" do
+      # Force synth on global via app: App(global/1, 42)
+      term = {:app, {:global, MyMod, :my_fun, 1}, {:lit, 42}}
+      type = {:builtin, :Int}
+      result = Erase.erase(term, type)
+      assert {:app, {:global, MyMod, :my_fun, 1}, {:lit, 42}} = result
+    end
+
+    test "global with arity 0 in synth mode via let" do
+      # Global with arity 0 synthesizes a non-pi type, which is type-level.
+      term = {:let, {:global, MyMod, :my_type, 0}, {:lit, 42}}
+      type = {:builtin, :Int}
+      result = Erase.erase(term, type)
+
+      # Global arity 0 → build_omega_type(0) = {:type, {:llit, 0}} → type-level → let eliminated.
+      assert result == {:lit, 42}
+    end
+  end
+
+  # ============================================================================
+  # Coverage: data declaration in synth mode
+  # ============================================================================
+
+  describe "data declaration erasure" do
+    test "data in check mode erases to :erased" do
+      term = {:data, :Nat, []}
+      type = {:type, {:llit, 0}}
+      assert Erase.erase(term, type) == :erased
+    end
+
+    test "data in synth mode erases to :erased via let" do
+      # let T = data Nat [] in 42 — synth on {:data, :Nat, []} gives {:erased, {:type, ...}}
+      # Since type-level, the let is eliminated.
+      term = {:let, {:data, :Nat, []}, {:lit, 42}}
+      type = {:builtin, :Int}
+      result = Erase.erase(term, type)
+      assert result == {:lit, 42}
+    end
+  end
+
+  # ============================================================================
+  # Coverage: literal pattern branches in synth mode
+  # ============================================================================
+
+  describe "synth mode case with literal branches" do
+    test "case with __lit branches in synth mode" do
+      # App forces synth on case expression with literal branches.
+      # case 1 of __lit(1) -> add; end then apply to 10
+      case_term =
+        {:case, {:lit, 1},
+         [
+           {:__lit, 1, {:app, {:builtin, :add}, {:lit, 5}}},
+           {:__lit, 2, {:app, {:builtin, :add}, {:lit, 10}}}
+         ]}
+
+      term = {:app, case_term, {:lit, 3}}
+      type = {:builtin, :Int}
+      result = Erase.erase(term, type)
+      # The case expression is erased in synth mode with __lit branches.
+      assert {:app, {:case, {:lit, 1}, [{:__lit, 1, _}, {:__lit, 2, _}]}, {:lit, 3}} = result
+    end
+
+    test "case with __lit branches determines result type from first branch" do
+      # Synth mode case where first branch is __lit — exercises lines 283-285.
+      # Use a let to trigger synth: let x = (case 1 of __lit(1) -> 42) in x
+      case_term = {:case, {:lit, 1}, [{:__lit, 1, {:lit, 42}}]}
+      term = {:let, case_term, {:var, 0}}
+      type = {:builtin, :Int}
+      result = Erase.erase(term, type)
+      assert {:let, {:case, {:lit, 1}, [{:__lit, 1, {:lit, 42}}]}, {:var, 0}} = result
+    end
+  end
+
+  # ============================================================================
+  # Coverage: empty branches fallback in synth mode
+  # ============================================================================
+
+  describe "synth mode case with empty branches" do
+    test "case with empty branches defaults to type" do
+      # Synth on case with no branches — exercises line 292-293.
+      # let x = (case 42 of []) in 10 — the case has no branches, result type defaults.
+      case_term = {:case, {:lit, 42}, []}
+      term = {:let, case_term, {:lit, 10}}
+      type = {:builtin, :Int}
+      result = Erase.erase(term, type)
+      # Empty branches → result type is {:type, {:llit, 0}} → type-level → let eliminated.
+      assert result == {:lit, 10}
+    end
+  end
 end

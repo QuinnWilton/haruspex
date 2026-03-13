@@ -70,6 +70,26 @@ defmodule Haruspex.ValueTest do
     end
   end
 
+  describe "ADT value constructors" do
+    test "vdata/2 constructs a data type value" do
+      args = [Value.vbuiltin(:Int)]
+      assert Value.vdata(:Maybe, args) == {:vdata, :Maybe, [{:vbuiltin, :Int}]}
+    end
+
+    test "vdata/2 with empty args" do
+      assert Value.vdata(:Unit, []) == {:vdata, :Unit, []}
+    end
+
+    test "vcon/3 constructs a data constructor value" do
+      args = [Value.vlit(42)]
+      assert Value.vcon(:Maybe, :Just, args) == {:vcon, :Maybe, :Just, [{:vlit, 42}]}
+    end
+
+    test "vcon/3 with no args" do
+      assert Value.vcon(:Maybe, :Nothing, []) == {:vcon, :Maybe, :Nothing, []}
+    end
+  end
+
   describe "fresh_var/2" do
     test "creates a neutral variable at the given level" do
       type = Value.vbuiltin(:Int)

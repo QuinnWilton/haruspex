@@ -942,6 +942,91 @@ defmodule Haruspex.PrettyTest do
   end
 
   # ============================================================================
+  # Coverage: pretty_term/2 entry point
+  # ============================================================================
+
+  describe "pretty_term/2 — entry point with defaults" do
+    test "pretty_term with no names argument uses empty list" do
+      result = Pretty.pretty_term({:lit, 42})
+      assert result == "42"
+    end
+
+    test "pretty_term with a core term and explicit names" do
+      result = Pretty.pretty_term({:var, 0}, [:x])
+      assert result == "x"
+    end
+  end
+
+  # ============================================================================
+  # Coverage: do_pretty_term for :global
+  # ============================================================================
+
+  describe "pretty_term — global reference" do
+    test "global term is pretty-printed as Mod.name/arity" do
+      result = Pretty.pretty_term({:global, MyMod, :my_fun, 2}, [])
+      assert result == "MyMod.my_fun/2"
+    end
+
+    test "global term with Elixir-style module" do
+      result = Pretty.pretty_term({:global, Elixir.Foo.Bar, :baz, 1}, [])
+      assert result == "Foo.Bar.baz/1"
+    end
+  end
+
+  # ============================================================================
+  # Coverage: do_pretty for :vglobal value
+  # ============================================================================
+
+  describe "value pretty — vglobal" do
+    test "vglobal is pretty-printed as Mod.name/arity" do
+      result = Pretty.pretty({:vglobal, MyMod, :my_fun, 2})
+      assert result == "MyMod.my_fun/2"
+    end
+  end
+
+  # ============================================================================
+  # Coverage: uses_var_zero_shifted? for ann (not present) and deeper nesting
+  # ============================================================================
+
+  describe "uses_var_zero_shifted? — deeper coverage via pretty_term" do
+    test "pi codomain with let whose body refs shifted var under binder" do
+      # Pi(omega, Type, let(lit(1), var(1)))
+      # let binds at depth 1, body var(1) at depth 2 is shifted var 0.
+      result =
+        Pretty.pretty_term(
+          {:pi, :omega, {:type, {:llit, 0}}, {:let, {:lit, 1}, {:var, 1}}},
+          []
+        )
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "dependent pi where body uses var 0 deeply nested in app" do
+      # Pi(omega, Type, app(app(var(0), var(0)), var(0)))
+      result =
+        Pretty.pretty_term(
+          {:pi, :omega, {:type, {:llit, 0}}, {:app, {:app, {:var, 0}, {:var, 0}}, {:var, 0}}},
+          []
+        )
+
+      assert result =~ "(x : Type)"
+    end
+
+    test "non-dependent pi with ann-like structure not referencing var 0" do
+      # Pi(omega, Int, fst(snd(lit(1))))
+      result =
+        Pretty.pretty_term(
+          {:pi, :omega, {:builtin, :Int}, {:fst, {:snd, {:lit, 1}}}},
+          []
+        )
+
+      # Non-dependent, should use arrow notation.
+      assert result =~ "->"
+      refute result =~ "(x :"
+    end
+  end
+
+  # ============================================================================
   # Property tests
   # ============================================================================
 

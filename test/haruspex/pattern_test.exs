@@ -555,4 +555,30 @@ defmodule Haruspex.PatternTest do
       end
     end
   end
+
+  # ============================================================================
+  # Coverage: exhaustiveness edge cases
+  # ============================================================================
+
+  describe "coverage: exhaustiveness edge cases" do
+    test "unknown ADT name returns ok" do
+      adts = %{Nat: nat_decl()}
+      branches = [{:zero, 0, nil}]
+      assert :ok = Pattern.check_exhaustiveness(adts, {:vdata, :Unknown, []}, branches)
+    end
+
+    test "literal branch mixed with constructor branches in ADT" do
+      adts = %{Nat: nat_decl()}
+      branches = [{:zero, 0, nil}, {:succ, 1, nil}, {:__lit, 42, nil}]
+      assert :ok = Pattern.check_exhaustiveness(adts, {:vdata, :Nat, []}, branches)
+    end
+
+    test "literal-only branches for ADT without wildcard" do
+      adts = %{Nat: nat_decl()}
+      branches = [{:__lit, 0, nil}]
+
+      assert {:warning, {:missing_patterns, [:succ, :zero]}} =
+               Pattern.check_exhaustiveness(adts, {:vdata, :Nat, []}, branches)
+    end
+  end
 end

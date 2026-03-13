@@ -456,4 +456,102 @@ defmodule Haruspex.CoreTest do
 
   defp do_check_scope({:spanned, _, inner}, depth), do: do_check_scope(inner, depth)
   defp do_check_scope(_, _depth), do: true
+
+  # ============================================================================
+  # ADT-related operations
+  # ============================================================================
+
+  describe "ADT constructors" do
+    test "global/3 constructs a global reference" do
+      assert Core.global(MyModule, :my_fun, 2) == {:global, MyModule, :my_fun, 2}
+    end
+  end
+
+  describe "subst/3 for ADT terms" do
+    test "substitution through :erased returns :erased" do
+      assert Core.subst(:erased, 0, {:lit, 1}) == :erased
+    end
+
+    test "substitution through {:data, name, args}" do
+      term = {:data, :Maybe, [{:var, 0}, {:lit, 42}]}
+
+      assert Core.subst(term, 0, {:lit, 99}) ==
+               {:data, :Maybe, [{:lit, 99}, {:lit, 42}]}
+    end
+
+    test "substitution through {:con, type_name, con_name, args}" do
+      term = {:con, :Maybe, :Just, [{:var, 0}]}
+
+      assert Core.subst(term, 0, {:lit, 7}) ==
+               {:con, :Maybe, :Just, [{:lit, 7}]}
+    end
+
+    test "substitution through {:record_proj, field, expr}" do
+      term = {:record_proj, :name, {:var, 0}}
+
+      assert Core.subst(term, 0, {:lit, "alice"}) ==
+               {:record_proj, :name, {:lit, "alice"}}
+    end
+
+    test "substitution through {:case, ...} with constructor branch" do
+      # Constructor branch with arity 2 shifts replacement twice.
+      term =
+        {:case, {:var, 0},
+         [
+           {:Just, 1, {:var, 1}},
+           {:Nothing, 0, {:lit, 0}}
+         ]}
+
+      result = Core.subst(term, 0, {:lit, 42})
+
+      # Scrutinee: Var(0) -> Lit(42).
+      # {:Just, 1, body}: target becomes 0+1=1, replacement shifted once.
+      #   Var(1) at target 1 gets replaced with shifted Lit(42) = Lit(42).
+      # {:Nothing, 0, body}: target stays 0, replacement not shifted.
+      #   Lit(0) is unchanged.
+      assert {:case, {:lit, 42}, branches} = result
+      assert [{:Just, 1, {:lit, 42}}, {:Nothing, 0, {:lit, 0}}] = branches
+    end
+  end
+
+  describe "shift/3 for ADT terms" do
+    test "shift through {:data, name, args}" do
+      term = {:data, :Maybe, [{:var, 0}, {:var, 1}]}
+
+      assert Core.shift(term, 1, 0) ==
+               {:data, :Maybe, [{:var, 1}, {:var, 2}]}
+    end
+
+    test "shift through {:con, type_name, con_name, args}" do
+      term = {:con, :Maybe, :Just, [{:var, 0}]}
+
+      assert Core.shift(term, 2, 0) ==
+               {:con, :Maybe, :Just, [{:var, 2}]}
+    end
+
+    test "shift through {:record_proj, field, expr}" do
+      term = {:record_proj, :name, {:var, 0}}
+
+      assert Core.shift(term, 1, 0) ==
+               {:record_proj, :name, {:var, 1}}
+    end
+
+    test "shift through {:case, ...} with constructor branch" do
+      # Constructor branch with arity 2: cutoff increases by arity inside body.
+      term =
+        {:case, {:var, 0},
+         [
+           {:Just, 2, {:var, 2}},
+           {:Nothing, 0, {:var, 0}}
+         ]}
+
+      result = Core.shift(term, 1, 0)
+
+      # Scrutinee: Var(0) at cutoff 0 -> Var(1).
+      # {:Just, 2, Var(2)}: cutoff becomes 0+2=2, Var(2) >= 2 -> Var(3).
+      # {:Nothing, 0, Var(0)}: cutoff stays 0, Var(0) >= 0 -> Var(1).
+      assert {:case, {:var, 1}, branches} = result
+      assert [{:Just, 2, {:var, 3}}, {:Nothing, 0, {:var, 1}}] = branches
+    end
+  end
 end

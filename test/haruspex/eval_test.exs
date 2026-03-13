@@ -379,4 +379,112 @@ defmodule Haruspex.EvalTest do
       end
     end
   end
+
+  # ============================================================================
+  # Coverage: vcase constructor error — no matching branch
+  # ============================================================================
+
+  describe "vcase — constructor no matching branch" do
+    test "raises CompilerBug when no branch matches and no wildcard" do
+      c = ctx()
+      scrutinee = {:vcon, :Color, :Red, []}
+      branches = [{:Blue, 0, {:lit, 1}}, {:Green, 0, {:lit, 2}}]
+
+      assert_raise Haruspex.CompilerBug, ~r/no branch for constructor Red/, fn ->
+        Eval.vcase(c, scrutinee, branches)
+      end
+    end
+  end
+
+  # ============================================================================
+  # Coverage: vcase literal wildcard with arity 0
+  # ============================================================================
+
+  describe "vcase — literal wildcard arity 0" do
+    test "literal falls through to wildcard with arity 0" do
+      c = ctx()
+      scrutinee = {:vlit, 99}
+      # No literal branch matches 99, wildcard with arity 0 catches it.
+      branches = [{:__lit, 1, {:lit, 10}}, {:_, 0, {:lit, 0}}]
+
+      result = Eval.vcase(c, scrutinee, branches)
+      assert result == {:vlit, 0}
+    end
+  end
+
+  # ============================================================================
+  # Coverage: vcase literal error — no matching branch
+  # ============================================================================
+
+  describe "vcase — literal no matching branch" do
+    test "raises CompilerBug when no literal branch matches and no wildcard" do
+      c = ctx()
+      scrutinee = {:vlit, 99}
+      branches = [{:__lit, 1, {:lit, 10}}, {:__lit, 2, {:lit, 20}}]
+
+      assert_raise Haruspex.CompilerBug, ~r/no branch for literal 99/, fn ->
+        Eval.vcase(c, scrutinee, branches)
+      end
+    end
+  end
+
+  # ============================================================================
+  # Coverage: vcase neutral — stuck case
+  # ============================================================================
+
+  describe "vcase — neutral scrutinee" do
+    test "neutral scrutinee produces stuck case" do
+      c = ctx()
+      int = {:vbuiltin, :Int}
+      ne_val = {:vneutral, int, {:nvar, 0}}
+      branches = [{:Zero, 0, {:lit, 0}}, {:Succ, 1, {:var, 0}}]
+
+      result = Eval.vcase(c, ne_val, branches)
+      assert {:vneutral, ^int, {:ncase, {:nvar, 0}, ^branches, []}} = result
+    end
+  end
+
+  # ============================================================================
+  # Coverage: do_delta catch-all
+  # ============================================================================
+
+  describe "do_delta — stuck reduction paths" do
+    test "neg with neutral arg produces stuck neutral" do
+      # The do_delta catch-all (line 409) is a defensive fallback for unknown ops.
+      # For known builtins with non-literal args, make_stuck_builtin is used instead.
+      c = ctx()
+      x = Value.fresh_var(0, {:vbuiltin, :Int})
+      result = Eval.vapp(c, {:vbuiltin, :neg}, x)
+      assert {:vneutral, _, _} = result
+    end
+
+    test "integer division by zero returns stuck via do_delta" do
+      # div(1, 0) → do_delta(:div, [1, 0]) → :stuck → make_stuck_builtin.
+      c = ctx()
+      term = {:app, {:app, {:builtin, :div}, {:lit, 1}}, {:lit, 0}}
+      assert {:vneutral, _, _} = Eval.eval(c, term)
+    end
+
+    test "float division by zero returns stuck via do_delta" do
+      # fdiv(1.0, 0.0) → do_delta(:fdiv, [1.0, 0.0]) → :stuck → make_stuck_builtin.
+      c = ctx()
+      term = {:app, {:app, {:builtin, :fdiv}, {:lit, 1.0}}, {:lit, +0.0}}
+      assert {:vneutral, _, _} = Eval.eval(c, term)
+    end
+  end
+
+  # ============================================================================
+  # Coverage: vcase constructor wildcard with arity 0
+  # ============================================================================
+
+  describe "vcase — constructor wildcard arity 0" do
+    test "constructor falls through to wildcard with arity 0" do
+      c = ctx()
+      scrutinee = {:vcon, :Color, :Red, []}
+      branches = [{:Blue, 0, {:lit, 1}}, {:_, 0, {:lit, 99}}]
+
+      result = Eval.vcase(c, scrutinee, branches)
+      assert result == {:vlit, 99}
+    end
+  end
 end

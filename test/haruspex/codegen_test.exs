@@ -537,4 +537,193 @@ defmodule Haruspex.CodegenTest do
       assert Codegen.eval_expr(term) == 3
     end
   end
+
+  # ============================================================================
+  # Float builtin operations
+  # ============================================================================
+
+  describe "float builtins" do
+    test "fully-applied fadd" do
+      term = {:app, {:app, {:builtin, :fadd}, {:lit, 1.5}}, {:lit, 2.5}}
+      assert Codegen.eval_expr(term) == 4.0
+    end
+
+    test "fully-applied fsub" do
+      term = {:app, {:app, {:builtin, :fsub}, {:lit, 5.0}}, {:lit, 2.0}}
+      assert Codegen.eval_expr(term) == 3.0
+    end
+
+    test "fully-applied fmul" do
+      term = {:app, {:app, {:builtin, :fmul}, {:lit, 3.0}}, {:lit, 4.0}}
+      assert Codegen.eval_expr(term) == 12.0
+    end
+
+    test "fully-applied fdiv" do
+      term = {:app, {:app, {:builtin, :fdiv}, {:lit, 10.0}}, {:lit, 4.0}}
+      assert Codegen.eval_expr(term) == 2.5
+    end
+
+    test "partially-applied fsub" do
+      fun = Codegen.eval_expr({:app, {:builtin, :fsub}, {:lit, 10.0}})
+      assert is_function(fun, 1)
+      assert fun.(3.0) == 7.0
+    end
+
+    test "partially-applied fmul" do
+      fun = Codegen.eval_expr({:app, {:builtin, :fmul}, {:lit, 3.0}})
+      assert is_function(fun, 1)
+      assert fun.(4.0) == 12.0
+    end
+
+    test "partially-applied fdiv" do
+      fun = Codegen.eval_expr({:app, {:builtin, :fdiv}, {:lit, 10.0}})
+      assert is_function(fun, 1)
+      assert fun.(4.0) == 2.5
+    end
+
+    test "partially-applied fadd" do
+      fun = Codegen.eval_expr({:app, {:builtin, :fadd}, {:lit, 1.5}})
+      assert is_function(fun, 1)
+      assert fun.(2.5) == 4.0
+    end
+
+    test "unapplied fadd" do
+      fun = Codegen.eval_expr({:builtin, :fadd})
+      assert fun.(1.5, 2.5) == 4.0
+    end
+
+    test "unapplied fsub" do
+      fun = Codegen.eval_expr({:builtin, :fsub})
+      assert fun.(5.0, 2.0) == 3.0
+    end
+
+    test "unapplied fmul" do
+      fun = Codegen.eval_expr({:builtin, :fmul})
+      assert fun.(3.0, 4.0) == 12.0
+    end
+
+    test "unapplied fdiv" do
+      fun = Codegen.eval_expr({:builtin, :fdiv})
+      assert fun.(10.0, 4.0) == 2.5
+    end
+  end
+
+  # ============================================================================
+  # Global cross-module reference
+  # ============================================================================
+
+  describe "global reference" do
+    test "unapplied global compiles to capture" do
+      ast = Codegen.compile_expr({:global, Kernel, :abs, 1})
+
+      # Should produce a function capture &Kernel.abs/1.
+      fun = Code.eval_quoted(ast) |> elem(0)
+      assert fun.(-5) == 5
+    end
+
+    test "fully-applied global compiles to direct call" do
+      term = {:app, {:global, Kernel, :abs, 1}, {:lit, -7}}
+      assert Codegen.eval_expr(term) == 7
+    end
+
+    test "partially-applied multi-arg global" do
+      # :math.pow/2 via global.
+      term = {:app, {:global, :math, :pow, 2}, {:lit, 2.0}}
+      fun = Codegen.eval_expr(term)
+      assert is_function(fun, 1)
+      assert fun.(10.0) == 1024.0
+    end
+
+    test "compile_module with global function body" do
+      # A function whose body is a global reference generates params and a direct call.
+      type = {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}
+      body = {:global, Kernel, :abs, 1}
+
+      ast = Codegen.compile_module(TestModGlobal, :all, [{:my_abs, type, body}])
+      Code.eval_quoted(ast)
+
+      assert TestModGlobal.my_abs(-42) == 42
+    after
+      :code.purge(TestModGlobal)
+      :code.delete(TestModGlobal)
+    end
+  end
+
+  # ============================================================================
+  # fresh_name collision path
+  # ============================================================================
+
+  describe "fresh_name collision" do
+    test "name collision in nested let + lambda generates suffixed name" do
+      # Build a term where fresh_name would naturally produce _v0, _v1, etc.
+      # Then nest lets/lambdas that force collision.
+      # The key is: lambda gives _v0, let inside gives _v1, another let gives _v2.
+      # If we nest enough, the collision path in fresh_name_loop is exercised.
+      # Use a case with a constructor branch that creates many binders.
+      term =
+        {:lam, :omega,
+         {:let, {:var, 0},
+          {:let, {:var, 0},
+           {:case, {:var, 0},
+            [
+              {:_, 1, {:var, 0}}
+            ]}}}}
+
+      fun = Codegen.eval_expr(term)
+      assert fun.(42) == 42
+    end
+  end
+
+  # ============================================================================
+  # subst_self for :let, :pair, :fst, :snd
+  # ============================================================================
+
+  describe "self-recursion substitution through various term shapes" do
+    test "self-ref through let binding" do
+      # def f(x : Int) : Int do let y = x in f(y) end
+      # body = lam(:omega, let(var(0), app(var(2), var(0))))
+      # After self-ref subst (f at ix 0): let(var(0), app(self_ref(:f), var(0)))
+      body = {:lam, :omega, {:let, {:var, 0}, {:app, {:var, 2}, {:var, 0}}}}
+      type = {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}
+
+      ast = Codegen.compile_module(TestModSelfLet, :all, [{:f, type, body}])
+      # The module should compile without error; f(x) = let y = x in f(y).
+      Code.eval_quoted(ast)
+      assert function_exported?(TestModSelfLet, :f, 1)
+    after
+      :code.purge(TestModSelfLet)
+      :code.delete(TestModSelfLet)
+    end
+
+    test "self-ref through pair and projections" do
+      # def f(x : Int) : Int do fst(pair(f(x), x)) end
+      # This exercises subst_self for :pair and :fst.
+      body =
+        {:lam, :omega, {:fst, {:pair, {:app, {:var, 1}, {:var, 0}}, {:var, 0}}}}
+
+      type = {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}
+
+      ast = Codegen.compile_module(TestModSelfPair, :all, [{:f, type, body}])
+      Code.eval_quoted(ast)
+      assert function_exported?(TestModSelfPair, :f, 1)
+    after
+      :code.purge(TestModSelfPair)
+      :code.delete(TestModSelfPair)
+    end
+
+    test "self-ref through snd projection" do
+      # def f(x : Int) : Int do snd(pair(x, f(x))) end
+      body =
+        {:lam, :omega, {:snd, {:pair, {:var, 0}, {:app, {:var, 1}, {:var, 0}}}}}
+
+      type = {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}
+
+      ast = Codegen.compile_module(TestModSelfSnd, :all, [{:f, type, body}])
+      Code.eval_quoted(ast)
+      assert function_exported?(TestModSelfSnd, :f, 1)
+    after
+      :code.purge(TestModSelfSnd)
+      :code.delete(TestModSelfSnd)
+    end
+  end
 end

@@ -336,4 +336,58 @@ defmodule Haruspex.QuoteTest do
       end
     end
   end
+
+  # ============================================================================
+  # Coverage: quote_untyped for vdata
+  # ============================================================================
+
+  describe "quote_untyped — vdata" do
+    test "vdata with args is read back as data term" do
+      val = {:vdata, :Nat, [{:vlit, 42}]}
+      result = Quote.quote_untyped(0, val)
+      assert result == {:data, :Nat, [{:lit, 42}]}
+    end
+
+    test "vdata with no args" do
+      val = {:vdata, :Bool, []}
+      assert Quote.quote_untyped(0, val) == {:data, :Bool, []}
+    end
+  end
+
+  # ============================================================================
+  # Coverage: quote_untyped for vglobal
+  # ============================================================================
+
+  describe "quote_untyped — vglobal" do
+    test "vglobal is read back as global term" do
+      val = {:vglobal, MyMod, :my_fun, 2}
+      assert Quote.quote_untyped(0, val) == {:global, MyMod, :my_fun, 2}
+    end
+  end
+
+  # ============================================================================
+  # Coverage: quote for vglobal (typed readback)
+  # ============================================================================
+
+  describe "quote — vglobal" do
+    test "vglobal is read back as global term at any type" do
+      int = {:vbuiltin, :Int}
+      val = {:vglobal, MyMod, :my_fun, 2}
+      assert Quote.quote(0, int, val) == {:global, MyMod, :my_fun, 2}
+    end
+  end
+
+  # ============================================================================
+  # Coverage: quote_neutral for ncase (__lit branch)
+  # ============================================================================
+
+  describe "quote — neutral case with __lit branch" do
+    test "ncase with __lit branch is read back" do
+      int = {:vbuiltin, :Int}
+      ne = {:ncase, {:nvar, 0}, [{:__lit, 42, {:lit, 1}}, {:Foo, 1, {:var, 0}}], []}
+      val = {:vneutral, int, ne}
+      result = Quote.quote(1, int, val)
+      assert {:case, {:var, 0}, [{:__lit, 42, {:lit, 1}}, {:Foo, 1, {:var, 0}}]} = result
+    end
+  end
 end

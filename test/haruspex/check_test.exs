@@ -722,6 +722,334 @@ defmodule Haruspex.CheckTest do
   end
 
   # ============================================================================
+  # Synth — ADT data type with known and unknown ADTs
+  # ============================================================================
+
+  describe "synth/2 — data type constructor" do
+    test "data type with known ADT synthesizes with correct universe level" do
+      # Register a parameterized Option ADT.
+      option_decl = %{
+        name: :Option,
+        params: [{:a, {:type, {:llit, 0}}}],
+        constructors: [
+          %{name: :none, fields: [], return_type: nil, span: nil},
+          %{name: :some, fields: [{:var, 0}], return_type: nil, span: nil}
+        ],
+        universe_level: {:llit, 0},
+        span: nil
+      }
+
+      ctx = %{Check.new() | adts: %{Option: option_decl}}
+
+      # Synth {:data, :Option, [{:builtin, :Int}]} — Option applied to Int.
+      {:ok, {:data, :Option, [{:builtin, :Int}]}, type, _ctx} =
+        Check.synth(ctx, {:data, :Option, [{:builtin, :Int}]})
+
+      assert {:vtype, {:llit, 0}} = type
+    end
+
+    test "data type with unknown ADT synthesizes as Type 0" do
+      ctx = Check.new()
+
+      {:ok, {:data, :Unknown, []}, type, _ctx} =
+        Check.synth(ctx, {:data, :Unknown, []})
+
+      assert {:vtype, {:llit, 0}} = type
+    end
+  end
+
+  # ============================================================================
+  # Synth — constructor with known and unknown ADT
+  # ============================================================================
+
+  describe "synth/2 — con with ADT context" do
+    test "constructor with known ADT synthesizes through constructor type" do
+      nat_decl = %{
+        name: :Nat,
+        params: [],
+        constructors: [
+          %{name: :zero, fields: [], return_type: nil, span: nil},
+          %{name: :succ, fields: [{:data, :Nat, []}], return_type: nil, span: nil}
+        ],
+        universe_level: {:llit, 0},
+        span: nil
+      }
+
+      ctx = %{Check.new() | adts: %{Nat: nat_decl}}
+
+      # Synth {:con, :Nat, :zero, []} — nullary constructor.
+      {:ok, {:con, :Nat, :zero, []}, type, _ctx} =
+        Check.synth(ctx, {:con, :Nat, :zero, []})
+
+      assert {:vdata, :Nat, []} = type
+    end
+
+    test "constructor with unknown ADT synthesizes structurally" do
+      ctx = Check.new()
+
+      {:ok, {:con, :Unknown, :mk, [{:lit, 1}]}, type, _ctx} =
+        Check.synth(ctx, {:con, :Unknown, :mk, [{:lit, 1}]})
+
+      assert {:vdata, :Unknown, []} = type
+    end
+  end
+
+  # ============================================================================
+  # Zonk — data, con, record_proj
+  # ============================================================================
+
+  describe "zonk/3 — data, con, record_proj" do
+    test "zonk descends into data args" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vlit, 42})
+
+      assert Check.zonk(ms, 0, {:data, :Option, [{:meta, id}]}) ==
+               {:data, :Option, [{:lit, 42}]}
+    end
+
+    test "zonk descends into con args" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vlit, 42})
+
+      assert Check.zonk(ms, 0, {:con, :Option, :some, [{:meta, id}]}) ==
+               {:con, :Option, :some, [{:lit, 42}]}
+    end
+
+    test "zonk descends into record_proj" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vlit, 42})
+
+      assert Check.zonk(ms, 0, {:record_proj, :x, {:meta, id}}) ==
+               {:record_proj, :x, {:lit, 42}}
+    end
+
+    test "zonk descends into case branches" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, id, {:vlit, 99})
+
+      term =
+        {:case, {:var, 0},
+         [
+           {:__lit, true, {:meta, id}},
+           {:some, 1, {:meta, id}}
+         ]}
+
+      result = Check.zonk(ms, 0, term)
+
+      assert {:case, {:var, 0},
+              [
+                {:__lit, true, {:lit, 99}},
+                {:some, 1, {:lit, 99}}
+              ]} = result
+    end
+  end
+
+  # ============================================================================
+  # Record projection desugaring error paths
+  # ============================================================================
+
+  describe "synth/2 — record_proj error paths" do
+    test "record_proj on non-record type returns not_a_record" do
+      ctx = Check.new()
+
+      # Synth record_proj(:x, 42) — 42 is Int, not a record type.
+      assert {:error, {:not_a_record, {:vbuiltin, :Int}, :x}} =
+               Check.synth(ctx, {:record_proj, :x, {:lit, 42}})
+    end
+
+    test "record_proj on unknown record type returns not_a_record" do
+      # The scrutinee has type {:vdata, :UnknownRec, []} but no record is registered.
+      nat_decl = %{
+        name: :Foo,
+        params: [],
+        constructors: [%{name: :mk_Foo, fields: [{:builtin, :Int}], return_type: nil, span: nil}],
+        universe_level: {:llit, 0},
+        span: nil
+      }
+
+      ctx = %{Check.new() | adts: %{Foo: nat_decl}}
+      ctx = extend(ctx, :r, {:vdata, :Foo, []}, :omega)
+
+      # Project field :x from r : Foo — but Foo is not in records map.
+      assert {:error, {:not_a_record, {:vdata, :Foo, []}, :x}} =
+               Check.synth(ctx, {:record_proj, :x, {:var, 0}})
+    end
+
+    test "record_proj on known record but unknown field returns not_a_record" do
+      record_decl = %{
+        name: :Point,
+        params: [],
+        fields: [{:x, {:builtin, :Int}}, {:y, {:builtin, :Int}}],
+        constructor_name: :mk_Point,
+        span: nil
+      }
+
+      point_adt = %{
+        name: :Point,
+        params: [],
+        constructors: [
+          %{
+            name: :mk_Point,
+            fields: [{:builtin, :Int}, {:builtin, :Int}],
+            return_type: nil,
+            span: nil
+          }
+        ],
+        universe_level: {:llit, 0},
+        span: nil
+      }
+
+      ctx = %{Check.new() | records: %{Point: record_decl}, adts: %{Point: point_adt}}
+      ctx = extend(ctx, :p, {:vdata, :Point, []}, :omega)
+
+      # Project field :z which doesn't exist on Point.
+      assert {:error, {:not_a_record, {:vdata, :Point, []}, :z}} =
+               Check.synth(ctx, {:record_proj, :z, {:var, 0}})
+    end
+  end
+
+  # ============================================================================
+  # Case branch context extension — wildcard and fallback
+  # ============================================================================
+
+  describe "synth/2 — case with wildcard and fallback patterns" do
+    test "case with wildcard 0-binder branch" do
+      ctx = Check.new()
+
+      # case 42 do _ -> 1 end (wildcard binds nothing).
+      term = {:case, {:lit, 42}, [{:_, 0, {:lit, 1}}]}
+
+      {:ok, {:case, {:lit, 42}, [{:_, 0, {:lit, 1}}]}, type, _ctx} =
+        Check.synth(ctx, term)
+
+      assert {:vbuiltin, :Int} = type
+    end
+
+    test "case with wildcard 1-binder branch" do
+      ctx = Check.new()
+
+      # case 42 do x -> x end (wildcard binds scrutinee).
+      term = {:case, {:lit, 42}, [{:_, 1, {:var, 0}}]}
+      {:ok, _case_term, type, _ctx} = Check.synth(ctx, term)
+
+      assert {:vbuiltin, :Int} = type
+    end
+
+    test "case with constructor branch and fallback field types" do
+      ctx = Check.new()
+
+      # case 42 do succ(n) -> n end — Int is not an ADT, so constructor_field_types
+      # falls back to placeholder types.
+      term = {:case, {:lit, 42}, [{:succ, 1, {:var, 0}}]}
+      {:ok, _case_term, type, _ctx} = Check.synth(ctx, term)
+
+      # The branch body type is the fallback {:vtype, {:llit, 0}} since
+      # the var is bound with that type.
+      assert type != nil
+    end
+
+    test "case with literal branch" do
+      ctx = Check.new()
+
+      # case 42 do 42 -> true; _ -> false end
+      term =
+        {:case, {:lit, 42},
+         [
+           {:__lit, 42, {:lit, true}},
+           {:_, 0, {:lit, false}}
+         ]}
+
+      {:ok, _case_term, type, _ctx} = Check.synth(ctx, term)
+      assert {:vbuiltin, :Bool} = type
+    end
+  end
+
+  # ============================================================================
+  # Case with known ADT constructor field types
+  # ============================================================================
+
+  describe "synth/2 — case with ADT constructor branches" do
+    test "constructor branch gets proper field types from ADT" do
+      nat_decl = %{
+        name: :Nat,
+        params: [],
+        constructors: [
+          %{name: :zero, fields: [], return_type: nil, span: nil},
+          %{name: :succ, fields: [{:data, :Nat, []}], return_type: nil, span: nil}
+        ],
+        universe_level: {:llit, 0},
+        span: nil
+      }
+
+      ctx = %{Check.new() | adts: %{Nat: nat_decl}}
+      ctx = extend(ctx, :n, {:vdata, :Nat, []}, :omega)
+
+      # case n do zero -> 0; succ(m) -> 1 end
+      term =
+        {:case, {:var, 0},
+         [
+           {:zero, 0, {:lit, 0}},
+           {:succ, 1, {:lit, 1}}
+         ]}
+
+      {:ok, _case_term, type, _ctx} = Check.synth(ctx, term)
+      assert {:vbuiltin, :Int} = type
+    end
+  end
+
+  # ============================================================================
+  # Check definition — extern
+  # ============================================================================
+
+  describe "check_definition/4 — extern" do
+    test "extern with matching arity succeeds" do
+      type_term = {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}
+      body_term = {:extern, :math, :sqrt, 1}
+
+      assert {:ok, {:extern, :math, :sqrt, 1}, _ctx} =
+               Check.check_definition(Check.new(), :my_sqrt, type_term, body_term)
+    end
+
+    test "extern with mismatched arity fails" do
+      type_term =
+        {:pi, :omega, {:builtin, :Int}, {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}}
+
+      body_term = {:extern, :math, :sqrt, 1}
+
+      assert {:error, {:extern_arity_mismatch, :my_sqrt, :math, :sqrt, 1, 2}} =
+               Check.check_definition(Check.new(), :my_sqrt, type_term, body_term)
+    end
+  end
+
+  # ============================================================================
+  # Check definition — global
+  # ============================================================================
+
+  describe "check_definition/4 — global" do
+    test "global with matching arity succeeds" do
+      type_term = {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}
+      body_term = {:global, Kernel, :abs, 1}
+
+      assert {:ok, {:global, Kernel, :abs, 1}, _ctx} =
+               Check.check_definition(Check.new(), :my_abs, type_term, body_term)
+    end
+
+    test "global with mismatched arity fails" do
+      type_term =
+        {:pi, :omega, {:builtin, :Int}, {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}}
+
+      body_term = {:global, Kernel, :abs, 1}
+
+      assert {:error, {:global_arity_mismatch, :my_abs, 1, 2}} =
+               Check.check_definition(Check.new(), :my_abs, type_term, body_term)
+    end
+  end
+
+  # ============================================================================
   # Helpers
   # ============================================================================
 

@@ -738,4 +738,190 @@ defmodule Haruspex.ADTTest do
       end
     end
   end
+
+  # ============================================================================
+  # Coverage: positivity edge cases
+  # ============================================================================
+
+  describe "coverage: positivity edge cases" do
+    test "positive recursion in pi codomain" do
+      decl = %{
+        name: :T,
+        params: [],
+        constructors: [
+          %{
+            name: :mk,
+            fields: [{:pi, :omega, {:builtin, :Int}, {:data, :T, []}}],
+            return_type: {:data, :T, []},
+            span: nil
+          }
+        ],
+        universe_level: {:llit, 0},
+        span: nil
+      }
+
+      assert :ok = ADT.check_positivity(decl)
+    end
+
+    test "app node in constructor field" do
+      decl = %{
+        name: :T,
+        params: [],
+        constructors: [
+          %{
+            name: :mk,
+            fields: [{:app, {:data, :T, []}, {:builtin, :Int}}],
+            return_type: {:data, :T, []},
+            span: nil
+          }
+        ],
+        universe_level: {:llit, 0},
+        span: nil
+      }
+
+      assert :ok = ADT.check_positivity(decl)
+    end
+
+    test "con node in constructor field" do
+      decl = %{
+        name: :T,
+        params: [],
+        constructors: [
+          %{
+            name: :mk,
+            fields: [{:con, :T, :mk, [{:builtin, :Int}]}],
+            return_type: {:data, :T, []},
+            span: nil
+          }
+        ],
+        universe_level: {:llit, 0},
+        span: nil
+      }
+
+      assert :ok = ADT.check_positivity(decl)
+    end
+
+    test "negative occurrence in nested pi" do
+      decl = %{
+        name: :T,
+        params: [],
+        constructors: [
+          %{
+            name: :mk,
+            fields: [
+              {:pi, :omega, {:pi, :omega, {:data, :T, []}, {:builtin, :Int}}, {:builtin, :Int}}
+            ],
+            return_type: {:data, :T, []},
+            span: nil
+          }
+        ],
+        universe_level: {:llit, 0},
+        span: nil
+      }
+
+      assert {:error, {:negative_occurrence, :T, :mk}} = ADT.check_positivity(decl)
+    end
+
+    test "app node in negative position" do
+      decl = %{
+        name: :T,
+        params: [],
+        constructors: [
+          %{
+            name: :mk,
+            fields: [
+              {:pi, :omega, {:app, {:data, :T, []}, {:builtin, :Int}}, {:builtin, :Int}}
+            ],
+            return_type: {:data, :T, []},
+            span: nil
+          }
+        ],
+        universe_level: {:llit, 0},
+        span: nil
+      }
+
+      assert {:error, {:negative_occurrence, :T, :mk}} = ADT.check_positivity(decl)
+    end
+  end
+
+  # ============================================================================
+  # Coverage: constructor_type with nil return_type
+  # ============================================================================
+
+  describe "coverage: constructor_type with nil return_type" do
+    test "default return type is computed for zero-param type" do
+      decl = %{
+        name: :Nat,
+        params: [],
+        constructors: [
+          %{name: :zero, fields: [], return_type: nil, span: nil},
+          %{name: :succ, fields: [{:data, :Nat, []}], return_type: nil, span: nil}
+        ],
+        universe_level: {:llit, 0},
+        span: nil
+      }
+
+      zero_type = ADT.constructor_type(decl, :zero)
+      assert {:data, :Nat, []} = zero_type
+
+      succ_type = ADT.constructor_type(decl, :succ)
+      assert {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}} = succ_type
+    end
+
+    test "default return type with params" do
+      decl = %{
+        name: :Option,
+        params: [{:a, {:type, {:llit, 0}}}],
+        constructors: [
+          %{name: :none, fields: [], return_type: nil, span: nil},
+          %{name: :some, fields: [{:var, 0}], return_type: nil, span: nil}
+        ],
+        universe_level: {:llit, 0},
+        span: nil
+      }
+
+      some_type = ADT.constructor_type(decl, :some)
+
+      # Outer: implicit param {a : Type}. Inner: field a -> Option(a).
+      # Under param + field binders, param `a` is at var index 1 (not 0).
+      assert {:pi, :zero, {:type, {:llit, 0}},
+              {:pi, :omega, {:var, 0}, {:data, :Option, [{:var, 1}]}}} = some_type
+    end
+  end
+
+  # ============================================================================
+  # Coverage: universe_of edge cases
+  # ============================================================================
+
+  describe "coverage: universe_of edge cases" do
+    test "pi type as param kind" do
+      decl = %{
+        name: :T,
+        params: [{:f, {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}}],
+        constructors: [
+          %{name: :mk, fields: [], return_type: {:data, :T, [{:var, 0}]}, span: nil}
+        ],
+        universe_level: {:llit, 0},
+        span: nil
+      }
+
+      level = ADT.compute_level(decl)
+      assert {:llit, 0} = level
+    end
+
+    test "unknown expression as field type" do
+      decl = %{
+        name: :T,
+        params: [],
+        constructors: [
+          %{name: :mk, fields: [{:some_exotic, :thing}], return_type: {:data, :T, []}, span: nil}
+        ],
+        universe_level: {:llit, 0},
+        span: nil
+      }
+
+      level = ADT.compute_level(decl)
+      assert {:llit, 0} = level
+    end
+  end
 end
