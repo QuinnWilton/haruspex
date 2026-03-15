@@ -18,50 +18,19 @@ A tier is complete when:
 10. Integration tests demonstrate the tier's milestone
 11. All changes are committed with atomic, bisect-able commits following `[component] description` style
 
-## Task index
+## Completed tiers
 
-### Tier 0: Syntax foundation
-- [[tier0-tokenizer]] — NimbleParsec tokenizer
-- [[tier0-parser]] — recursive descent + Pratt parser
-- [[tier0-ast-gaps]] — fill AST specification gaps
+Tiers 0–6 are complete. Task files are in [`done/`](done/).
 
-### Tier 1: Core type theory
-- [[tier1-core-terms]] — core term representation
-- [[tier1-values-nbe]] — values, eval, quote, NbE
-- [[tier1-context]] — typing context with multiplicities
+- **Tier 0**: Syntax foundation (tokenizer, parser, AST gaps)
+- **Tier 1**: Core type theory (core terms, values/NbE, context)
+- **Tier 2**: Type checking + implicits (unification, elaboration, checker, mutual, pretty, errors, subsystem gaps)
+- **Tier 3**: Codegen + pipeline (codegen, queries, extern, subsystem gaps)
+- **Tier 4**: Module system (modules, prelude)
+- **Tier 5**: ADTs + records (ADTs, pattern matching, records, with-abstraction, subsystem gaps)
+- **Tier 6**: Type classes (classes, instances, codegen, arithmetic overload, checker instance search, builtin operator removal, subsystem gaps)
 
-### Tier 2: Type checking + implicits
-- [[tier2-unification]] — meta solving, pattern unification, level solver
-- [[tier2-elaboration]] — surface → core, implicits, holes, auto-implicits
-- [[tier2-checker]] — bidirectional synth/check, multiplicity tracking
-- [[tier2-mutual]] — mutual block signature collection
-- [[tier2-pretty]] — value → string pretty-printer
-- [[tier2-errors]] — error rendering with pentiment spans
-- [[tier2-subsystem-gaps]] — fill specification gaps blocking implementation
-
-### Tier 3: Codegen + pipeline
-- [[tier3-codegen]] — type + multiplicity erasure, Elixir AST generation
-- [[tier3-queries]] — roux query wiring, entities
-- [[tier3-extern]] — extern function declarations and codegen
-- [[tier3-subsystem-gaps]] — fill specification gaps
-
-### Tier 4: Module system
-- [[tier4-modules]] — file → module mapping, imports, visibility
-- [[tier4-prelude]] — auto-imported prelude with builtins
-
-### Tier 5: ADTs + records
-- [[tier5-adts]] — type declarations, constructors, positivity
-- [[tier5-pattern-matching]] — case trees, coverage, dependent matching
-- [[tier5-records]] — single-constructor ADTs, struct codegen
-- [[tier5-with-abstraction]] — dependent matching on computed values
-- [[tier5-subsystem-gaps]] — fill specification gaps
-
-### Tier 6: Type classes
-- [[tier6-classes]] — class declarations, dictionary types
-- [[tier6-instances]] — instance declarations, search, coherence
-- [[tier6-codegen]] — dictionary passing, protocol bridge
-- [[tier6-arithmetic-overload]] — migrate builtins to typeclass methods
-- [[tier6-subsystem-gaps]] — fill specification gaps
+## Remaining tiers
 
 ### Tier 7: Totality
 - [[tier7-totality]] — @total structural recursion checking
