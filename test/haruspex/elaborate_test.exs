@@ -55,9 +55,11 @@ defmodule Haruspex.ElaborateTest do
       assert {:ok, {:builtin, :Int}, _} = Elaborate.elaborate(ctx, {:var, span(), :Int})
     end
 
-    test "add resolves to builtin" do
+    test "add is no longer a prelude name (resolved via Num class)" do
       ctx = Elaborate.new()
-      assert {:ok, {:builtin, :add}, _} = Elaborate.elaborate(ctx, {:var, span(), :add})
+      # add was removed from the prelude — it's now a class method, not a builtin name.
+      assert {:error, {:unbound_variable, :add, _}} =
+               Elaborate.elaborate(ctx, {:var, span(), :add})
     end
 
     test "Float resolves to builtin" do
@@ -70,10 +72,11 @@ defmodule Haruspex.ElaborateTest do
       assert {:ok, {:builtin, :String}, _} = Elaborate.elaborate(ctx, {:var, span(), :String})
     end
 
-    test "all arithmetic builtins resolve" do
+    test "non-class arithmetic builtins resolve" do
       ctx = Elaborate.new()
 
-      for op <- [:add, :sub, :mul, :div, :neg, :fadd, :fsub, :fmul, :fdiv] do
+      # add, sub, mul migrated to Num class; eq migrated to Eq class.
+      for op <- [:div, :neg, :fadd, :fsub, :fmul, :fdiv] do
         assert {:ok, {:builtin, ^op}, _} = Elaborate.elaborate(ctx, {:var, span(), op})
       end
     end
@@ -81,7 +84,8 @@ defmodule Haruspex.ElaborateTest do
     test "all comparison builtins resolve" do
       ctx = Elaborate.new()
 
-      for op <- [:eq, :neq, :lt, :gt, :lte, :gte] do
+      # eq migrated to Eq class.
+      for op <- [:neq, :lt, :gt, :lte, :gte] do
         assert {:ok, {:builtin, ^op}, _} = Elaborate.elaborate(ctx, {:var, span(), op})
       end
     end

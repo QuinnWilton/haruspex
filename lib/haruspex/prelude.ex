@@ -19,19 +19,22 @@ defmodule Haruspex.Prelude do
   **Boolean**: `not`, `and`, `or`
   """
 
+  # Operators migrated to type classes (Num, Eq, Ord) are no longer in the
+  # builtin table. They resolve through instance search at elaboration time
+  # for literal operands, and through the checker's class method lookup for
+  # variable operands. The binop syntax (e.g., `x + y`) still produces
+  # {:builtin, :add} core terms directly without needing name resolution.
   @builtins %{
     Int: {:builtin, :Int},
     Float: {:builtin, :Float},
     String: {:builtin, :String},
     Atom: {:builtin, :Atom},
     Bool: {:builtin, :Bool},
-    add: {:builtin, :add},
-    sub: {:builtin, :sub},
-    mul: {:builtin, :mul},
+    # add, sub, mul — resolved via Num class
+    # eq — resolved via Eq class
     div: {:builtin, :div},
     neg: {:builtin, :neg},
     not: {:builtin, :not},
-    eq: {:builtin, :eq},
     neq: {:builtin, :neq},
     lt: {:builtin, :lt},
     gt: {:builtin, :gt},

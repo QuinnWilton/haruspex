@@ -38,7 +38,18 @@ defmodule Haruspex.Check do
           | {:universe_error, String.t()}
 
   @enforce_keys [:context, :names, :meta_state]
-  defstruct [:context, :names, :meta_state, :db, hole_reports: [], adts: %{}, records: %{}]
+  defstruct [
+    :context,
+    :names,
+    :meta_state,
+    :db,
+    hole_reports: [],
+    adts: %{},
+    records: %{},
+    classes: %{},
+    instances: %{},
+    class_param_metas: %{}
+  ]
 
   @type t :: %__MODULE__{
           context: Context.t(),
@@ -47,7 +58,10 @@ defmodule Haruspex.Check do
           db: term() | nil,
           hole_reports: [hole_report()],
           adts: %{atom() => Haruspex.ADT.adt_decl()},
-          records: %{atom() => Haruspex.Record.record_decl()}
+          records: %{atom() => Haruspex.Record.record_decl()},
+          classes: %{atom() => Haruspex.TypeClass.class_decl()},
+          instances: Haruspex.TypeClass.Search.instance_db(),
+          class_param_metas: %{non_neg_integer() => atom()}
         }
 
   # ============================================================================
@@ -309,10 +323,16 @@ defmodule Haruspex.Check do
     end
   end
 
-  # Builtin type.
+  # Builtin type: check if it's a class method first for polymorphic resolution.
   def synth(ctx, {:builtin, name}) do
-    type = builtin_type(name)
-    {:ok, {:builtin, name}, type, ctx}
+    case find_class_method(ctx.classes, name) do
+      {:ok, class_name} ->
+        synth_class_builtin(ctx, name, class_name)
+
+      :error ->
+        type = builtin_type(name)
+        {:ok, {:builtin, name}, type, ctx}
+    end
   end
 
   # Global cross-module reference: look up the type via roux query.
@@ -631,12 +651,19 @@ defmodule Haruspex.Check do
         {:error, {:unsolved_meta, id, type}}
 
       nil ->
-        case LevelSolver.solve(ms.level_constraints) do
-          {:ok, _assignments} ->
-            {:ok, ctx}
+        # Validate class parameter metas: check that solved class params have instances.
+        case validate_class_params(ctx) do
+          :ok ->
+            case LevelSolver.solve(ms.level_constraints) do
+              {:ok, _assignments} ->
+                {:ok, ctx}
 
-          {:error, {:universe_cycle, _}} ->
-            {:error, {:universe_error, "universe level constraints are unsatisfiable"}}
+              {:error, {:universe_cycle, _}} ->
+                {:error, {:universe_error, "universe level constraints are unsatisfiable"}}
+            end
+
+          {:error, _} = err ->
+            err
         end
     end
   end
@@ -939,9 +966,15 @@ defmodule Haruspex.Check do
     }
   end
 
-  # Restore outer context's bindings but keep inner's meta state and hole reports.
+  # Restore outer context's bindings but keep inner's meta state, hole reports,
+  # and class param meta tracking.
   defp restore_ctx(outer, inner) do
-    %{outer | meta_state: inner.meta_state, hole_reports: inner.hole_reports}
+    %{
+      outer
+      | meta_state: inner.meta_state,
+        hole_reports: inner.hole_reports,
+        class_param_metas: inner.class_param_metas
+    }
   end
 
   defp eval_in(ctx, term) do
@@ -970,5 +1003,76 @@ defmodule Haruspex.Check do
       type_str = Pretty.pretty(binding.type, ctx.names, Context.level(ctx.context))
       {binding.name, type_str}
     end)
+  end
+
+  # ============================================================================
+  # Internal — class param instance validation
+  # ============================================================================
+
+  # After checking, verify that solved class parameter metas have valid instances.
+  # For example, if `{:builtin, :add}` was typed as `?a -> ?a -> ?a` and `?a`
+  # solved to `String`, we check that `Num(String)` exists — and error if not.
+  defp validate_class_params(ctx) do
+    ms = ctx.meta_state
+
+    Enum.reduce_while(ctx.class_param_metas, :ok, fn {meta_id, class_name}, :ok ->
+      case Map.get(ms.entries, meta_id) do
+        {:solved, val} ->
+          search_ms = MetaState.new()
+          goal = {class_name, [val]}
+
+          case Haruspex.TypeClass.Search.search(ctx.instances, ctx.classes, search_ms, 0, goal) do
+            {:found, _, _} -> {:cont, :ok}
+            _ -> {:halt, {:error, {:no_instance, class_name, val}}}
+          end
+
+        {:unsolved, _, _, _} ->
+          # Unsolved — will be caught by the unsolved implicit check.
+          {:cont, :ok}
+
+        nil ->
+          {:cont, :ok}
+      end
+    end)
+  end
+
+  # ============================================================================
+  # Internal — class method resolution
+  # ============================================================================
+
+  # Find which class a method belongs to.
+  defp find_class_method(classes, method_name) do
+    Enum.find_value(classes, :error, fn {class_name, decl} ->
+      if Enum.any?(decl.methods, fn {name, _} -> name == method_name end) do
+        {:ok, class_name}
+      end
+    end)
+  end
+
+  # Synthesize a polymorphic type for a builtin that's a class method.
+  # Creates a fresh meta for the class type parameter and returns the
+  # method type with the meta substituted. The meta is tagged with
+  # :class_param kind so post_process can validate instance existence.
+  defp synth_class_builtin(ctx, method_name, class_name) do
+    class_decl = Map.fetch!(ctx.classes, class_name)
+    {:ok, method_type_core} = Haruspex.TypeClass.method_type(class_decl, method_name)
+
+    # Create a fresh meta for the class type parameter.
+    lvl = Context.level(ctx.context)
+    {meta_id, ms} = MetaState.fresh_meta(ctx.meta_state, {:vtype, {:llit, 0}}, lvl, :implicit)
+
+    ctx = %{
+      ctx
+      | meta_state: ms,
+        class_param_metas: Map.put(ctx.class_param_metas, meta_id, class_name)
+    }
+
+    meta_val = {:vneutral, {:vtype, {:llit, 0}}, {:nmeta, meta_id}}
+
+    # Evaluate the method type with the meta as the class param (var 0).
+    eval_ctx = make_eval_ctx(ctx, [meta_val])
+    method_type_val = Eval.eval(eval_ctx, method_type_core)
+
+    {:ok, {:builtin, method_name}, method_type_val, ctx}
   end
 end
