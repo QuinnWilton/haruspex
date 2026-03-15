@@ -33,10 +33,13 @@ defmodule Haruspex.Codegen do
   def compile_module(module_name, exports, definitions, options \\ %{}) do
     records = Map.get(options, :records, %{})
     adts = Map.get(options, :adts, %{})
+    prelude_dict_names = prelude_dict_names()
 
-    # Generate nested struct modules for each record.
+    # Generate nested struct modules for each record (excluding prelude dicts).
     struct_modules =
-      Enum.map(records, fn {record_name, decl} ->
+      records
+      |> Enum.reject(fn {name, _} -> name in prelude_dict_names end)
+      |> Enum.map(fn {record_name, decl} ->
         field_names = Enum.map(decl.fields, fn {fname, _} -> fname end)
         nested_name = Module.concat(module_name, record_name)
 
@@ -47,10 +50,12 @@ defmodule Haruspex.Codegen do
         end
       end)
 
-    # Generate constructor functions for ADTs (excluding record types).
+    # Generate constructor functions for ADTs (excluding record types and prelude dicts).
     constructor_funs =
       adts
-      |> Enum.reject(fn {name, _} -> Map.has_key?(records, name) end)
+      |> Enum.reject(fn {name, _} ->
+        Map.has_key?(records, name) or name in prelude_dict_names
+      end)
       |> Enum.flat_map(fn {_type_name, decl} ->
         Enum.map(decl.constructors, fn con ->
           params =
@@ -70,6 +75,9 @@ defmodule Haruspex.Codegen do
           end
         end)
       end)
+
+    instances = Map.get(options, :instances, %{})
+    classes = Map.get(options, :classes, %{})
 
     # Store records in process dictionary for compile/2 to use.
     prev = Process.get(:haruspex_codegen_records)
@@ -100,7 +108,7 @@ defmodule Haruspex.Codegen do
             substitute_self_ref(term, ix, ref_name)
           end)
 
-        {params, compiled_body} = compile_function(erased, [])
+        {params, compiled_body} = compile_function(inline_dicts(erased), [])
         visibility = if exports == :all or name in exports, do: :def, else: :defp
 
         quote do
@@ -110,19 +118,28 @@ defmodule Haruspex.Codegen do
         end
       end)
 
+    # Generate __dict__ functions for each instance.
+    dict_funs = compile_instance_dicts(instances, records, module_name)
+
     Process.put(:haruspex_codegen_records, prev)
+
+    # Generate protocol bridges for @protocol-annotated classes.
+    protocol_modules =
+      Haruspex.TypeClass.Bridge.compile_bridges(classes, instances, records, module_name)
 
     module_def =
       quote do
         defmodule unquote(module_name) do
-          (unquote_splicing(constructor_funs ++ funs))
+          (unquote_splicing(constructor_funs ++ funs ++ dict_funs))
         end
       end
 
-    if struct_modules == [] do
+    all_extra = struct_modules ++ protocol_modules
+
+    if all_extra == [] do
       module_def
     else
-      {:__block__, [], struct_modules ++ [module_def]}
+      {:__block__, [], all_extra ++ [module_def]}
     end
   end
 
@@ -131,7 +148,7 @@ defmodule Haruspex.Codegen do
   """
   @spec compile_expr(Core.expr()) :: Macro.t()
   def compile_expr(term) do
-    compile(term, [])
+    compile(inline_dicts(term), [])
   end
 
   @doc """
@@ -334,6 +351,13 @@ defmodule Haruspex.Codegen do
     quote do
       elem(unquote(compiled), 1)
     end
+  end
+
+  # Record projection: field access on a struct.
+  # Known-constructor inlining is handled by inline_dicts/1 before compilation.
+  defp compile({:record_proj, field_name, expr}, names) do
+    compiled = compile(expr, names)
+    {{:., [], [compiled, field_name]}, [no_parens: true], []}
   end
 
   # Constructor: check if it's a record for struct codegen.
@@ -552,11 +576,149 @@ defmodule Haruspex.Codegen do
   defp builtin_capture(:or), do: {Kernel, :or, 2}
 
   # ============================================================================
+  # Dictionary inlining (core-term level)
+  # ============================================================================
+
+  # Rewrite `{:record_proj, field, {:con, type, con, args}}` to the concrete
+  # field value before compilation. This lets fully-applied builtin patterns
+  # fire even when the builtin was extracted from a dictionary constructor.
+  @doc false
+  def inline_dicts({:record_proj, field_name, expr}) do
+    inlined_expr = inline_dicts(expr)
+
+    case inlined_expr do
+      {:con, type_name, _con_name, args} ->
+        records = Process.get(:haruspex_codegen_records, %{})
+
+        case Map.fetch(records, type_name) do
+          {:ok, record_decl} ->
+            field_names = Enum.map(record_decl.fields, fn {fname, _} -> fname end)
+            field_index = Enum.find_index(field_names, &(&1 == field_name))
+
+            if field_index do
+              inline_dicts(Enum.at(args, field_index))
+            else
+              {:record_proj, field_name, inlined_expr}
+            end
+
+          :error ->
+            {:record_proj, field_name, inlined_expr}
+        end
+
+      _ ->
+        {:record_proj, field_name, inlined_expr}
+    end
+  end
+
+  def inline_dicts({:app, f, a}), do: {:app, inline_dicts(f), inline_dicts(a)}
+  def inline_dicts({:lam, m, body}), do: {:lam, m, inline_dicts(body)}
+  def inline_dicts({:let, d, b}), do: {:let, inline_dicts(d), inline_dicts(b)}
+  def inline_dicts({:pair, a, b}), do: {:pair, inline_dicts(a), inline_dicts(b)}
+  def inline_dicts({:fst, e}), do: {:fst, inline_dicts(e)}
+  def inline_dicts({:snd, e}), do: {:snd, inline_dicts(e)}
+
+  def inline_dicts({:con, tn, cn, args}),
+    do: {:con, tn, cn, Enum.map(args, &inline_dicts/1)}
+
+  def inline_dicts({:case, scrut, branches}) do
+    {:case, inline_dicts(scrut),
+     Enum.map(branches, fn
+       {:__lit, v, body} -> {:__lit, v, inline_dicts(body)}
+       {tag, arity, body} -> {tag, arity, inline_dicts(body)}
+     end)}
+  end
+
+  def inline_dicts(term), do: term
+
+  # ============================================================================
+  # Instance dictionary compilation
+  # ============================================================================
+
+  # Generate __dict__ functions for each instance in the database.
+  # For `instance Eq(Int)`, generates:
+  #   def __dict_Eq_Int__(), do: %EqDict{eq: fn x, y -> ... end}
+  # For `[Eq(a)] => Eq(List(a))`, generates:
+  #   def __dict_Eq_List__(eq_a), do: %EqDict{eq: fn xs, ys -> ... end}
+  defp compile_instance_dicts(instances, records, _module_name) do
+    instances
+    |> Enum.flat_map(fn {_class_name, entries} -> entries end)
+    |> Enum.reject(fn entry -> entry.module == :prelude end)
+    |> Enum.map(fn entry ->
+      dict_name = Haruspex.TypeClass.dict_name(entry.class_name)
+      fun_name = dict_function_name(entry)
+
+      # Constraint parameters become function params (sub-dictionaries).
+      constraint_params =
+        Enum.with_index(entry.constraints, fn _, i ->
+          Macro.var(:"_dict#{i}", __MODULE__)
+        end)
+
+      # Build the struct body.
+      case Map.fetch(records, dict_name) do
+        {:ok, record_decl} ->
+          field_names = Enum.map(record_decl.fields, fn {fname, _} -> fname end)
+
+          # Map constraint dicts to superclass fields, methods to method fields.
+          n_supers = length(entry.constraints)
+          method_terms = Enum.map(entry.methods, fn {_name, body} -> body end)
+          super_indices = if n_supers > 0, do: Enum.to_list(0..(n_supers - 1)), else: []
+          all_values = super_indices ++ method_terms
+
+          field_asts =
+            Enum.zip(field_names, all_values)
+            |> Enum.map(fn
+              {fname, idx} when is_integer(idx) ->
+                {fname, Enum.at(constraint_params, idx)}
+
+              {fname, body_term} ->
+                {fname, compile(body_term, [])}
+            end)
+
+          struct_ast = {:%, [], [dict_name, {:%{}, [], field_asts}]}
+
+          quote do
+            def unquote(fun_name)(unquote_splicing(constraint_params)), do: unquote(struct_ast)
+          end
+
+        :error ->
+          # No record decl — skip (shouldn't happen for well-formed programs).
+          quote do
+          end
+      end
+    end)
+  end
+
+  # Generate a deterministic function name for an instance's __dict__ function.
+  # e.g., Eq(Int) → :__dict_Eq_Int__, Eq(List(a)) → :__dict_Eq_List_a__
+  defp dict_function_name(entry) do
+    head_suffix =
+      entry.head
+      |> Enum.map(&head_term_name/1)
+      |> Enum.join("_")
+
+    :"__dict_#{entry.class_name}_#{head_suffix}__"
+  end
+
+  defp head_term_name({:builtin, name}), do: Atom.to_string(name)
+
+  defp head_term_name({:data, name, args}),
+    do: "#{name}_#{Enum.map_join(args, "_", &head_term_name/1)}"
+
+  defp head_term_name({:var, ix}), do: "v#{ix}"
+  defp head_term_name(_), do: "unknown"
+
+  # ============================================================================
   # Record helpers
   # ============================================================================
 
   defp find_record_by_constructor(records, con_name) do
     Enum.find(records, fn {_name, decl} -> decl.constructor_name == con_name end)
+  end
+
+  # Prelude dictionary type names that should not generate struct modules
+  # or constructor functions in user modules.
+  defp prelude_dict_names do
+    MapSet.new([:NumDict, :EqDict, :OrdDict])
   end
 
   # ============================================================================
@@ -638,6 +800,10 @@ defmodule Haruspex.Codegen do
 
   defp subst_self({:con, tn, cn, args}, self_ix, name, depth) do
     {:con, tn, cn, Enum.map(args, &subst_self(&1, self_ix, name, depth))}
+  end
+
+  defp subst_self({:record_proj, field, expr}, self_ix, name, depth) do
+    {:record_proj, field, subst_self(expr, self_ix, name, depth)}
   end
 
   defp subst_self(term, _self_ix, _name, _depth), do: term

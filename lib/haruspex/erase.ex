@@ -146,6 +146,11 @@ defmodule Haruspex.Erase do
      end)}
   end
 
+  # Record projection: erase inner expression structurally.
+  defp check({:record_proj, field, expr}, _type, ctx) do
+    {:record_proj, field, synth_and_erase(expr, ctx)}
+  end
+
   # Structural: pass through unchanged.
   defp check({:var, ix}, _type, _ctx), do: {:var, ix}
   defp check({:lit, v}, _type, _ctx), do: {:lit, v}
@@ -253,6 +258,13 @@ defmodule Haruspex.Erase do
 
   # Data type: type-level.
   defp synth({:data, _, _}, _ctx), do: {:erased, {:type, {:llit, 0}}}
+
+  # Record projection: erase inner, return a runtime type placeholder.
+  defp synth({:record_proj, field, expr}, ctx) do
+    erased_expr = synth_and_erase(expr, ctx)
+    # We don't track exact field types through erasure. Use a placeholder.
+    {{:record_proj, field, erased_expr}, {:type, {:llit, 0}}}
+  end
 
   # Constructor: keep field args, return the data type.
   defp synth({:con, type_name, con_name, args}, ctx) do
