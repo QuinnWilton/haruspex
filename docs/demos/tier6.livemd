@@ -1,0 +1,382 @@
+<!-- playbill:{"version":"0.1.0"} -->
+
+# Tier 6: Type Classes
+
+```elixir
+Mix.install([
+  {:haruspex, path: "/Users/quinn/dev/beam_box/haruspex"},
+  {:roux, path: "/Users/quinn/dev/beam_box/roux"},
+  {:pentiment, path: "/Users/quinn/dev/beam_box/pentiment"},
+  {:constrain, path: "/Users/quinn/dev/beam_box/constrain"},
+  {:quail, path: "/Users/quinn/dev/beam_box/quail"}
+])
+```
+
+Tier 6 implements **type classes** — the mechanism for ad-hoc polymorphism. A type class
+declares a set of methods that can be implemented for different types, and the compiler
+resolves which implementation to use through **instance search**.
+
+This demo walks through the full system end-to-end:
+
+1. **Class & instance declarations** — parsing, elaboration, dictionary record generation
+2. **Instance search** — depth-bounded search with specificity-based overlap resolution
+3. **Arithmetic overloading** — `+` on `Int` and `Float` resolves through `Num` class
+4. **Dictionary-passing codegen** — dictionaries compile to structs, monomorphic sites inline to zero overhead
+5. **Protocol bridge** — `@protocol` annotation generates Elixir protocols from classes
+6. **Instance validation** — the checker rejects operations on types without instances
+
+## Parsing class & instance declarations
+
+A **class declaration** defines a set of methods parameterized by a type variable.
+Superclass constraints appear in brackets before `do`. The parser produces a
+`{:class_decl, ...}` AST node.
+
+```elixir
+{:ok, [class_ast]} = Haruspex.Parser.parse("""
+class Eq(a : Type) do
+  eq : a -> a -> Bool
+end
+""")
+
+{:ok, [ord_ast]} = Haruspex.Parser.parse("""
+class Ord(a : Type) [Eq(a)] do
+  compare : a -> a -> Int
+end
+""")
+
+IO.inspect(class_ast, label: "Eq class")
+IO.inspect(elem(ord_ast, 4), label: "Ord superclasses")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Eq class: {:class_decl, %Pentiment.Span.Byte{start: 0, length: 47}, :Eq,
+ [
+   {:param, %Pentiment.Span.Byte{start: 9, length: 8}, {:a, :omega, false},
+    {:type_universe, %Pentiment.Span.Byte{start: 13, length: 4}, nil}}
+ ], [],
+ [
+   {:method_sig, %Pentiment.Span.Byte{start: 24, length: 19}, :eq,
+    {:pi, %Pentiment.Span.Byte{start: 29, length: 14}, {:_, :omega, false},
+     {:var, %Pentiment.Span.Byte{start: 29, length: 1}, :a},
+     {:pi, %Pentiment.Span.Byte{start: 34, length: 9}, {:_, :omega, false},
+      {:var, %Pentiment.Span.Byte{start: 34, length: 1}, :a},
+      {:var, %Pentiment.Span.Byte{start: 39, length: 4}, :Bool}}}}
+ ]}
+Ord superclasses: [
+  {:constraint, %Pentiment.Span.Byte{start: 21, length: 2}, :Eq,
+   [{:var, %Pentiment.Span.Byte{start: 24, length: 1}, :a}]}
+]
+```
+
+**Instance declarations** provide implementations of class methods for specific types.
+The parser wraps method bodies in `:fn` nodes so parameter bindings are available.
+
+```elixir
+{:ok, forms} = Haruspex.Parser.parse("""
+class Eq(a : Type) do
+  eq : a -> a -> Bool
+end
+
+instance Eq(Int) do
+  def eq(x : Int, y : Int) : Bool do x == y end
+end
+""")
+
+[_class, {:instance_decl, _, :Eq, type_args, _constraints, methods}] = forms
+IO.inspect(type_args, label: "instance head")
+IO.inspect(length(methods), label: "method count")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+instance head: [{:var, %Pentiment.Span.Byte{start: 61, length: 3}, :Int}]
+method count: 1
+```
+
+## Elaboration: classes → dictionary records
+
+Each class generates a **dictionary record type**. The `Eq` class produces an `EqDict`
+record with one field per method. Superclass constraints become nested sub-dictionary
+fields. This is the standard dictionary-passing compilation strategy.
+
+```elixir
+ctx = Haruspex.Elaborate.new()
+
+# Elaborate the Eq class
+{:ok, [eq_ast]} = Haruspex.Parser.parse("class Eq(a : Type) do\n  eq : a -> a -> Bool\nend")
+{:ok, eq_decl, ctx} = Haruspex.Elaborate.elaborate_class_decl(ctx, eq_ast)
+
+IO.puts("Class: #{eq_decl.name}")
+IO.puts("Dict name: #{eq_decl.dict_name}")
+IO.puts("Methods: #{inspect(Enum.map(eq_decl.methods, &elem(&1, 0)))}")
+
+# The dictionary record is registered automatically
+record = ctx.records[:EqDict]
+IO.puts("\nDictionary record fields:")
+for {name, _type} <- record.fields do
+  IO.puts("  #{name}")
+end
+
+# Elaborate Ord with Eq superclass
+{:ok, [ord_ast]} = Haruspex.Parser.parse("class Ord(a : Type) [Eq(a)] do\n  compare : a -> a -> Int\nend")
+{:ok, _ord_decl, ctx} = Haruspex.Elaborate.elaborate_class_decl(ctx, ord_ast)
+
+ord_record = ctx.records[:OrdDict]
+IO.puts("\nOrdDict fields (superclass + methods):")
+for {name, _type} <- ord_record.fields do
+  IO.puts("  #{name}")
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Class: Eq
+Dict name: EqDict
+Methods: [:eq]
+
+Dictionary record fields:
+  eq
+
+OrdDict fields (superclass + methods):
+  eq_super
+  compare
+```
+
+## Instance search
+
+Instance search is **depth-bounded** to prevent divergence from recursive instances.
+When multiple instances match, **specificity-based overlap resolution** picks the most
+specific one. Superclass extraction allows finding `Eq(a)` via an `Ord(a)` instance.
+
+```elixir
+alias Haruspex.TypeClass.Search
+alias Haruspex.Unify.MetaState
+
+# Use the prelude context which has Num, Eq, Ord with Int/Float instances
+ctx = Haruspex.Elaborate.new()
+ms = MetaState.new()
+
+# Search for Num(Int) — should find the prelude instance
+{:found, dict, _ms} = Search.search(ctx.instances, ctx.classes, ms, 0, {:Num, [{:vbuiltin, :Int}]})
+IO.inspect(dict, label: "Num(Int) dictionary")
+
+# Search for Num(Float) — different builtin methods
+{:found, float_dict, _ms} = Search.search(ctx.instances, ctx.classes, ms, 0, {:Num, [{:vbuiltin, :Float}]})
+IO.inspect(float_dict, label: "Num(Float) dictionary")
+
+# Search for Num(String) — no instance exists
+result = Search.search(ctx.instances, ctx.classes, ms, 0, {:Num, [{:vbuiltin, :String}]})
+IO.inspect(result, label: "Num(String)")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Num(Int) dictionary: {:con, :NumDict, :mk_NumDict, [builtin: :add, builtin: :sub, builtin: :mul]}
+Num(Float) dictionary: {:con, :NumDict, :mk_NumDict, [builtin: :fadd, builtin: :fsub, builtin: :fmul]}
+Num(String): {:not_found, {:Num, [vbuiltin: :String]}}
+```
+
+The `Num(Int)` dictionary contains `{:builtin, :add}`, `{:builtin, :sub}`, `{:builtin, :mul}` —
+the same builtins as before. The `Num(Float)` dictionary uses `{:builtin, :fadd}` etc.
+This means **`1.0 + 2.0` now works correctly** — the elaborator resolves through `Num(Float)`
+and selects the float addition builtin automatically.
+
+## Arithmetic overloading: + resolves through Num
+
+```elixir
+ctx = Haruspex.Elaborate.new()
+s = struct!(Pentiment.Span.Byte, start: 0, length: 0)
+
+# Int addition: resolves to {:builtin, :add}
+{:ok, int_core, _} = Haruspex.Elaborate.elaborate(ctx, {:binop, s, :add, {:lit, s, 1}, {:lit, s, 2}})
+IO.inspect(int_core, label: "1 + 2")
+
+# Float addition: resolves to {:builtin, :fadd} via Num(Float)
+{:ok, float_core, _} = Haruspex.Elaborate.elaborate(ctx, {:binop, s, :add, {:lit, s, 1.0}, {:lit, s, 2.0}})
+IO.inspect(float_core, label: "1.0 + 2.0")
+
+# The builtins are different! Float uses :fadd, Int uses :add
+IO.puts("\nInt builtin:   #{inspect(elem(elem(int_core, 1), 1))}")
+IO.puts("Float builtin: #{inspect(elem(elem(float_core, 1), 1))}")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+1 + 2: {:app, {:app, {:builtin, :add}, {:lit, 1}}, {:lit, 2}}
+1.0 + 2.0: {:app, {:app, {:builtin, :fadd}, {:lit, 1.0}}, {:lit, 2.0}}
+
+Int builtin:   {:builtin, :add}
+Float builtin: {:builtin, :fadd}
+```
+
+## Dictionary inlining in codegen
+
+When the dictionary is a **compile-time constant** (the instance was fully resolved),
+codegen inlines the dictionary — extracting the method body directly from the constructor.
+This means `Num(Int).add(1, 2)` compiles to `1 + 2` with **zero runtime overhead**.
+
+```elixir
+ctx = Haruspex.Elaborate.new()
+
+# Set up codegen records so dictionary inlining works
+prev = Process.get(:haruspex_codegen_records)
+Process.put(:haruspex_codegen_records, ctx.records)
+
+# Build what instance search would produce: a dictionary constructor with the add method
+dict = {:con, :NumDict, :mk_NumDict, [{:builtin, :add}, {:builtin, :sub}, {:builtin, :mul}]}
+
+# Extract add via record_proj, then apply to arguments
+method_access = {:record_proj, :add, dict}
+full_expr = {:app, {:app, method_access, {:lit, 1}}, {:lit, 2}}
+
+# Codegen inlines the dictionary and produces direct kernel call
+ast = Haruspex.Codegen.compile_expr(full_expr)
+IO.puts("Generated Elixir: #{Macro.to_string(ast)}")
+
+# Execute it
+{result, _} = Code.eval_quoted(ast)
+IO.puts("Result: #{result}")
+
+Process.put(:haruspex_codegen_records, prev)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Generated Elixir: 1 + 2
+Result: 3
+```
+
+## Full pipeline: parse → elaborate → check → codegen
+
+The full pipeline compiles Haruspex source files into callable BEAM modules.
+Arithmetic operations on `Int` and `Float` go through the type class system,
+and the checker validates that instances exist for the types used.
+
+```elixir
+db = Roux.Database.new()
+Roux.Lang.register(db, Haruspex)
+
+Roux.Input.set(db, :source_text, "lib/math.hx", """
+def add_ints(x : Int, y : Int) : Int do x + y end
+def add_floats(x : Float, y : Float) : Float do x + y end
+def mul_ints(a : Int, b : Int) : Int do a * b end
+""")
+
+{:ok, module} = Roux.Runtime.query(db, :haruspex_compile, "lib/math.hx")
+IO.puts("Module: #{module}")
+IO.puts("add_ints(10, 20) = #{module.add_ints(10, 20)}")
+IO.puts("add_floats(1.5, 2.5) = #{module.add_floats(1.5, 2.5)}")
+IO.puts("mul_ints(6, 7) = #{module.mul_ints(6, 7)}")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Module: Elixir.Math
+add_ints(10, 20) = 30
+add_floats(1.5, 2.5) = 4.0
+mul_ints(6, 7) = 42
+```
+
+## Instance validation: rejecting invalid operations
+
+The checker creates a fresh meta for the class type parameter when it encounters a
+class method builtin. After the meta is solved by unification with the operand types,
+**post-processing validates** that a matching instance exists. If not, a `{:no_instance, ...}`
+error is produced — no more silent misuse of `+` on types that don't support it.
+
+```elixir
+db = Roux.Database.new()
+Roux.Lang.register(db, Haruspex)
+
+# Try to add Strings — no Num(String) instance exists
+Roux.Input.set(db, :source_text, "lib/bad.hx", """
+def bad(x : String, y : String) : String do x + y end
+""")
+
+{:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/bad.hx")
+result = Roux.Runtime.query(db, :haruspex_check, {"lib/bad.hx", :bad})
+IO.inspect(result, label: "String + String")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+String + String: {:error, {:no_instance, :Num, {:vbuiltin, :String}}}
+```
+
+## @protocol bridge
+
+The `@protocol` annotation on a single-parameter class generates an **Elixir protocol**
+alongside the dictionary-passing implementation. Haruspex callers use dictionaries
+internally; the protocol exists for Elixir interop.
+
+```elixir
+# Parse @protocol annotation
+{:ok, [form]} = Haruspex.Parser.parse("""
+@protocol
+class Show(a : Type) do
+  show : a -> String
+end
+""")
+
+IO.inspect(tuple_size(form), label: "tuple size (7 = has protocol flag)")
+
+# Elaborate with protocol flag
+ctx = Haruspex.Elaborate.new()
+{:ok, decl, _ctx} = Haruspex.Elaborate.elaborate_class_decl(ctx, form)
+IO.puts("protocol?: #{decl.protocol?}")
+
+# Generate protocol bridge
+ast = Haruspex.TypeClass.Bridge.compile_protocol(decl, MyApp)
+IO.puts("\nGenerated protocol:\n#{Macro.to_string(ast)}")
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+tuple size (7 = has protocol flag): 7
+protocol?: true
+
+Generated protocol:
+defprotocol(MyApp.Show) do
+  def show(arg0, arg1)
+end
+```
+
+## Prelude classes and instances
+
+The prelude provides three classes and six instances out of the box. Every elaboration
+context created with `Elaborate.new()` has these registered, so `+`, `-`, `*`, and `==`
+work on `Int` and `Float` without any user declarations.
+
+```elixir
+ctx = Haruspex.Elaborate.new()
+
+IO.puts("Prelude classes: #{inspect(Map.keys(ctx.classes))}")
+IO.puts("")
+
+for {class_name, entries} <- ctx.instances do
+  heads = Enum.map(entries, fn e ->
+    e.head |> Enum.map(fn {:builtin, n} -> n; other -> inspect(other) end) |> Enum.join(", ")
+  end)
+  IO.puts("#{class_name} instances: #{Enum.join(heads, " | ")}")
+end
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+Prelude classes: [:Eq, :Num, :Ord]
+
+Eq instances: Int | Float
+Num instances: Int | Float
+Ord instances: Int | Float
+```
