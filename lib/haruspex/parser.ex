@@ -240,10 +240,11 @@ defmodule Haruspex.Parser do
   # ============================================================================
 
   defp parse_at_toplevel(state) do
-    # Peek past @ to see if this is @implicit, @no_prelude, or an annotation on def.
+    # Peek past @ to see if this is @implicit, @no_prelude, @protocol, or an annotation on def.
     case peek2(state) do
       {:ident, _, :implicit} -> parse_implicit_decl(state)
       {:ident, _, :no_prelude} -> parse_no_prelude(state)
+      {:ident, _, :protocol} -> parse_protocol_class(state)
       _ -> parse_annotated_def(state)
     end
   end
@@ -254,6 +255,27 @@ defmodule Haruspex.Parser do
     {_, end_span, _} = peek(state)
     state = advance(state)
     {:ok, {:no_prelude, merge(start_span, end_span)}, state}
+  end
+
+  defp parse_protocol_class(state) do
+    # @protocol before a class declaration marks it for Elixir protocol generation.
+    state = advance(state)
+    state = advance(state)
+    state = skip_newlines(state)
+
+    case peek(state) do
+      {:class, _, _} ->
+        case parse_class_decl(state) do
+          {:ok, {:class_decl, span, name, params, constraints, methods}, state} ->
+            {:ok, {:class_decl, span, name, params, constraints, methods, :protocol}, state}
+
+          other ->
+            other
+        end
+
+      {tag, span, _} ->
+        {:error, "expected class declaration after @protocol, got #{tag}", span}
+    end
   end
 
   defp parse_annotated_def(state) do
@@ -893,9 +915,54 @@ defmodule Haruspex.Parser do
   end
 
   defp parse_optional_constraints(state) do
-    # Constraints are parsed as [ClassName(args)] before `do`.
-    # For now, return empty — full implementation in Tier 6.
-    {:ok, [], state}
+    case peek(state) do
+      {:lbracket, _, _} ->
+        state = advance(state)
+        parse_constraint_list(state, [])
+
+      _ ->
+        {:ok, [], state}
+    end
+  end
+
+  defp parse_constraint_list(state, acc) do
+    state = skip_newlines(state)
+
+    case peek(state) do
+      {:rbracket, _, _} ->
+        {:ok, Enum.reverse(acc), advance(state)}
+
+      {:upper_ident, span, name} ->
+        state = advance(state)
+
+        {args, state} =
+          case peek(state) do
+            {:lparen, _, _} ->
+              state = advance(state)
+
+              case parse_type_arg_list(state) do
+                {:ok, args, state} -> {args, state}
+                {:error, _, _} = err -> throw(err)
+              end
+
+            _ ->
+              {[], state}
+          end
+
+        constraint = {:constraint, span, name, args}
+        state = skip_newlines(state)
+
+        case peek(state) do
+          {:comma, _, _} ->
+            parse_constraint_list(advance(state), [constraint | acc])
+
+          _ ->
+            parse_constraint_list(state, [constraint | acc])
+        end
+
+      {tag, span, _} ->
+        {:error, "expected constraint or ], got #{tag}", span}
+    end
   end
 
   defp parse_method_sigs(state, acc) do
@@ -944,8 +1011,12 @@ defmodule Haruspex.Parser do
       {:def, _, _} ->
         case parse_def(state, %{total: false, private: false, extern: nil}) do
           {:ok, def_node, state} ->
-            {:def, _, {:sig, _, name, _, _, _, _}, body} = def_node
-            impl = {:method_impl, AST.span(def_node), name, body}
+            {:def, _, {:sig, sig_span, name, _, params, _ret_type, _}, body} = def_node
+
+            full_body =
+              if params == [], do: body, else: {:fn, sig_span, params, body}
+
+            impl = {:method_impl, AST.span(def_node), name, full_body}
             parse_method_impls(state, [impl | acc])
 
           {:error, msg, span} ->

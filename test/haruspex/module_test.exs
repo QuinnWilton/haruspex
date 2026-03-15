@@ -520,12 +520,13 @@ defmodule Haruspex.ModuleTest do
       # Force parse.
       {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/types.hx")
 
-      {:ok, {adts, records}} =
+      {:ok, {adts, records, _classes, _instances}} =
         Roux.Runtime.query(db, :haruspex_elaborate_types, "lib/types.hx")
 
       assert Map.has_key?(adts, :Color)
       assert length(adts[:Color].constructors) == 3
-      assert records == %{}
+      # Prelude dict records exist but no user-defined records.
+      refute Map.has_key?(records, :Color)
     end
 
     test "self-recursive function compiles end-to-end" do

@@ -40,7 +40,9 @@ defmodule Haruspex.Elaborate do
     :imports,
     :source_roots,
     :adts,
-    :records
+    :records,
+    :classes,
+    :instances
   ]
   defstruct [
     :names,
@@ -56,7 +58,9 @@ defmodule Haruspex.Elaborate do
     :imports,
     :source_roots,
     :adts,
-    :records
+    :records,
+    :classes,
+    :instances
   ]
 
   @type import_info :: %{
@@ -78,7 +82,9 @@ defmodule Haruspex.Elaborate do
           imports: [import_info()],
           source_roots: [String.t()],
           adts: %{atom() => Haruspex.ADT.adt_decl()},
-          records: %{atom() => Haruspex.Record.record_decl()}
+          records: %{atom() => Haruspex.Record.record_decl()},
+          classes: %{atom() => Haruspex.TypeClass.class_decl()},
+          instances: Haruspex.TypeClass.Search.instance_db()
         }
 
   # ============================================================================
@@ -98,6 +104,15 @@ defmodule Haruspex.Elaborate do
     no_prelude? = Keyword.get(opts, :no_prelude?, false)
     prelude = if no_prelude?, do: %{}, else: Haruspex.Prelude.builtins()
 
+    # Merge prelude type classes when prelude is active.
+    {prelude_classes, prelude_instances, prelude_records, prelude_adts} =
+      if no_prelude? do
+        {%{}, %{}, %{}, %{}}
+      else
+        tc = Haruspex.Prelude.TypeClasses
+        {tc.class_decls(), tc.instance_db(), tc.record_decls(), tc.adt_decls()}
+      end
+
     %__MODULE__{
       names: [],
       name_list: [],
@@ -111,8 +126,10 @@ defmodule Haruspex.Elaborate do
       uri: Keyword.get(opts, :uri),
       imports: Keyword.get(opts, :imports, []),
       source_roots: Keyword.get(opts, :source_roots, []),
-      adts: Keyword.get(opts, :adts, %{}),
-      records: Keyword.get(opts, :records, %{})
+      adts: Map.merge(prelude_adts, Keyword.get(opts, :adts, %{})),
+      records: Map.merge(prelude_records, Keyword.get(opts, :records, %{})),
+      classes: Map.merge(prelude_classes, Keyword.get(opts, :classes, %{})),
+      instances: Map.merge(prelude_instances, Keyword.get(opts, :instances, %{}))
     }
   end
 
@@ -175,7 +192,10 @@ defmodule Haruspex.Elaborate do
   def elaborate(ctx, {:binop, _span, op, left, right}) do
     with {:ok, left_core, ctx} <- elaborate(ctx, left),
          {:ok, right_core, ctx} <- elaborate(ctx, right) do
-      {:ok, {:app, {:app, {:builtin, op}, left_core}, right_core}, ctx}
+      case resolve_method_operator(ctx, op, left_core, right_core) do
+        {:ok, resolved} -> {:ok, resolved, ctx}
+        :fallback -> {:ok, {:app, {:app, {:builtin, op}, left_core}, right_core}, ctx}
+      end
     end
   end
 
@@ -562,6 +582,292 @@ defmodule Haruspex.Elaborate do
     ctx = %{ctx | records: Map.put(ctx.records, name, record_decl)}
 
     {:ok, record_decl, ctx}
+  end
+
+  # ============================================================================
+  # Internal — class elaboration
+  # ============================================================================
+
+  @doc """
+  Elaborate a class declaration.
+
+  Generates the dictionary record type, registers the class in the context,
+  and registers the dictionary as both a record and an ADT so that
+  constructor names and field projections resolve correctly.
+  """
+  @spec elaborate_class_decl(t(), term()) ::
+          {:ok, Haruspex.TypeClass.class_decl(), t()} | {:error, elab_error()}
+  def elaborate_class_decl(
+        ctx,
+        {:class_decl, span, name, type_params, constraints, method_sigs, :protocol}
+      ) do
+    with {:ok, class_decl, ctx} <-
+           elaborate_class_decl(
+             ctx,
+             {:class_decl, span, name, type_params, constraints, method_sigs}
+           ) do
+      {:ok, Map.put(class_decl, :protocol?, true), ctx}
+    end
+  end
+
+  def elaborate_class_decl(ctx, {:class_decl, span, name, type_params, constraints, method_sigs}) do
+    # Elaborate type parameters.
+    {elab_params, inner_ctx} =
+      Enum.reduce(type_params, {[], ctx}, fn
+        {:param, _pspan, {param_name, _mult, _implicit?}, kind_expr}, {acc, c} ->
+          {:ok, kind_core, c} = elaborate_type(c, kind_expr)
+          c = push_binding(c, param_name)
+          {[{param_name, kind_core} | acc], c}
+
+        {param_name, kind_expr}, {acc, c} ->
+          {:ok, kind_core, c} = elaborate_type(c, kind_expr)
+          c = push_binding(c, param_name)
+          {[{param_name, kind_core} | acc], c}
+      end)
+
+    elab_params = Enum.reverse(elab_params)
+
+    # Elaborate superclass constraints.
+    elab_constraints =
+      Enum.map(constraints, fn {:constraint, _cspan, class_name, args} ->
+        elab_args =
+          Enum.map(args, fn arg ->
+            {:ok, core, _} = elaborate_type(inner_ctx, arg)
+            core
+          end)
+
+        {class_name, elab_args}
+      end)
+
+    # Elaborate method signatures.
+    elab_methods =
+      Enum.map(method_sigs, fn {:method_sig, _mspan, method_name, type_expr} ->
+        {:ok, type_core, _} = elaborate_type(inner_ctx, type_expr)
+        {method_name, type_core}
+      end)
+
+    ctx = restore_bindings(ctx, inner_ctx)
+
+    class_decl = %{
+      name: name,
+      params: elab_params,
+      superclasses: elab_constraints,
+      methods: elab_methods,
+      defaults: [],
+      dict_name: Haruspex.TypeClass.dict_name(name),
+      dict_constructor_name: Haruspex.TypeClass.dict_constructor_name(name),
+      span: span
+    }
+
+    # Generate dictionary record and register it.
+    record_decl = Haruspex.TypeClass.class_to_record(class_decl)
+    adt_decl = Haruspex.Record.record_to_adt(record_decl)
+    level = Haruspex.ADT.compute_level(adt_decl)
+    adt_decl = %{adt_decl | universe_level: level}
+
+    ctx = register_adt(ctx, adt_decl)
+    ctx = %{ctx | records: Map.put(ctx.records, record_decl.name, record_decl)}
+    ctx = %{ctx | classes: Map.put(ctx.classes, name, class_decl)}
+
+    {:ok, class_decl, ctx}
+  end
+
+  # ============================================================================
+  # Internal — instance elaboration
+  # ============================================================================
+
+  @doc """
+  Elaborate an instance declaration.
+
+  Checks that the class exists, elaborates the instance head types and
+  constraints, elaborates method implementations, and registers the
+  instance in the database.
+  """
+  @spec elaborate_instance_decl(t(), term()) ::
+          {:ok, Haruspex.TypeClass.instance_decl(), t()} | {:error, elab_error()}
+  def elaborate_instance_decl(
+        ctx,
+        {:instance_decl, span, class_name, type_args, constraints, method_impls}
+      ) do
+    case Map.fetch(ctx.classes, class_name) do
+      {:ok, class_decl} ->
+        do_elaborate_instance(
+          ctx,
+          span,
+          class_name,
+          class_decl,
+          type_args,
+          constraints,
+          method_impls
+        )
+
+      :error ->
+        {:error, {:unknown_class, class_name, span}}
+    end
+  end
+
+  defp do_elaborate_instance(
+         ctx,
+         span,
+         class_name,
+         class_decl,
+         type_args,
+         constraints,
+         method_impls
+       ) do
+    # Collect free type variables from instance head to determine instance params.
+    # e.g., `instance Eq(List(a))` has param `a`.
+    head_vars = collect_instance_params(type_args, ctx)
+
+    # Bind instance params.
+    {inner_ctx, param_names} =
+      Enum.reduce(head_vars, {ctx, []}, fn var_name, {c, names} ->
+        c = push_binding(c, var_name)
+        {c, names ++ [var_name]}
+      end)
+
+    n_params = length(param_names)
+
+    # Elaborate instance head type args.
+    elab_args =
+      Enum.map(type_args, fn arg ->
+        {:ok, core, _} = elaborate_type(inner_ctx, arg)
+        core
+      end)
+
+    # Elaborate constraints.
+    elab_constraints =
+      Enum.map(constraints, fn {:constraint, _cspan, con_class, con_args} ->
+        elab_con_args =
+          Enum.map(con_args, fn arg ->
+            {:ok, core, _} = elaborate_type(inner_ctx, arg)
+            core
+          end)
+
+        {con_class, elab_con_args}
+      end)
+
+    # Elaborate method implementations.
+    elab_methods =
+      Enum.map(method_impls, fn {:method_impl, _mspan, method_name, body} ->
+        {:ok, body_core, _} = elaborate(inner_ctx, body)
+        {method_name, body_core}
+      end)
+
+    # Validate all class methods are implemented.
+    class_method_names = Haruspex.TypeClass.method_names(class_decl)
+    impl_method_names = Enum.map(elab_methods, fn {name, _} -> name end)
+    missing = class_method_names -- impl_method_names
+
+    # Fill missing methods from defaults.
+    elab_methods =
+      Enum.reduce(missing, elab_methods, fn method_name, acc ->
+        case Haruspex.TypeClass.default_method(class_decl, method_name) do
+          {:ok, default_body} -> acc ++ [{method_name, default_body}]
+          :error -> acc
+        end
+      end)
+
+    ctx = restore_bindings(ctx, inner_ctx)
+
+    instance_decl = %{
+      class_name: class_name,
+      args: elab_args,
+      n_params: n_params,
+      constraints: elab_constraints,
+      methods: elab_methods,
+      span: span,
+      module: nil
+    }
+
+    # Register in instance database.
+    entry = %{
+      class_name: class_name,
+      n_params: n_params,
+      head: elab_args,
+      constraints: elab_constraints,
+      methods: elab_methods,
+      span: span,
+      module: nil
+    }
+
+    instances = Haruspex.TypeClass.Search.register(ctx.instances, entry)
+    ctx = %{ctx | instances: instances}
+
+    # Orphan instance detection: warn if instance is in neither the class's
+    # module nor any head type's module.
+    orphan_warning = detect_orphan_instance(ctx, class_name, type_args, span)
+
+    {:ok, Map.put(instance_decl, :orphan_warning, orphan_warning), ctx}
+  end
+
+  # Detect orphan instances: an instance is orphan if it's defined in a module
+  # that contains neither the class definition nor any of the head types.
+  # Returns nil (not orphan) or {:orphan_instance, class_name, span}.
+  defp detect_orphan_instance(ctx, class_name, type_args, span) do
+    # Prelude classes are always in scope — instances of prelude classes are
+    # not orphans if they use a locally-defined type.
+    prelude_class? = class_name in Map.keys(Haruspex.Prelude.TypeClasses.class_decls())
+
+    # A class defined in the current file (elaborated during this pass).
+    local_class? = local_class?(ctx, class_name)
+
+    # Check if any head type is locally defined.
+    local_type? = Enum.any?(type_args, &local_head_type?(ctx, &1))
+
+    cond do
+      local_class? -> nil
+      local_type? -> nil
+      prelude_class? and head_uses_builtin_type?(type_args) -> nil
+      true -> {:orphan_instance, class_name, span}
+    end
+  end
+
+  # A class is local if it was NOT in the prelude classes (i.e., it was added
+  # by the current file's elaboration).
+  defp local_class?(ctx, class_name) do
+    prelude_classes = Haruspex.Prelude.TypeClasses.class_decls()
+
+    Map.has_key?(ctx.classes, class_name) and
+      not Map.has_key?(prelude_classes, class_name)
+  end
+
+  # Check if a head type arg references a locally-defined ADT.
+  defp local_head_type?(ctx, {:var, _span, name}) do
+    prelude_adts = Haruspex.Prelude.TypeClasses.adt_decls()
+    Map.has_key?(ctx.adts, name) and not Map.has_key?(prelude_adts, name)
+  end
+
+  defp local_head_type?(ctx, {:app, _span, func, _args}), do: local_head_type?(ctx, func)
+  defp local_head_type?(_ctx, _), do: false
+
+  # Check if the head exclusively uses builtin types (prelude instances).
+  defp head_uses_builtin_type?(type_args) do
+    Enum.all?(type_args, fn
+      {:var, _span, name} -> name in [:Int, :Float, :String, :Bool, :Atom]
+      _ -> false
+    end)
+  end
+
+  # Collect free type variable names from instance type args.
+  # These become the instance's type parameters. Known names (prelude types,
+  # ADTs, records, classes) are filtered out — they're type references, not params.
+  defp collect_instance_params(type_args, ctx) do
+    known = known_type_names(ctx)
+
+    type_args
+    |> Enum.flat_map(&collect_type_vars/1)
+    |> Enum.uniq_by(fn {name, _span} -> name end)
+    |> Enum.reject(fn {name, _span} -> MapSet.member?(known, name) end)
+    |> Enum.map(fn {name, _span} -> name end)
+  end
+
+  defp known_type_names(ctx) do
+    prelude_names = Map.keys(ctx.prelude)
+    adt_names = Map.keys(ctx.adts)
+    record_names = Map.keys(ctx.records)
+    class_names = Map.keys(ctx.classes)
+    MapSet.new(prelude_names ++ adt_names ++ record_names ++ class_names)
   end
 
   # Elaborate `%Point{x: 1.0, y: 2.0}` into `{:con, :Point, :mk_Point, [1.0, 2.0]}`.
@@ -1275,4 +1581,67 @@ defmodule Haruspex.Elaborate do
   defp collect_type_vars({:type_universe, _span, _}), do: []
   defp collect_type_vars({:lit, _span, _}), do: []
   defp collect_type_vars(_), do: []
+
+  # ============================================================================
+  # Internal — type class method resolution for operators
+  # ============================================================================
+
+  # For literal operands, resolve a binary operator through instance search.
+  # Returns {:ok, core_term} if the operator is a class method and the instance
+  # is found, or :fallback to use the builtin directly.
+  @spec resolve_method_operator(t(), atom(), Core.expr(), Core.expr()) ::
+          {:ok, Core.expr()} | :fallback
+  defp resolve_method_operator(ctx, op, left_core, right_core) do
+    case find_class_method(ctx.classes, op) do
+      {:ok, class_name} ->
+        case infer_literal_type(left_core) do
+          {:ok, type_val} ->
+            ms = Haruspex.Unify.MetaState.new()
+            goal = {class_name, [type_val]}
+
+            case Haruspex.TypeClass.Search.search(ctx.instances, ctx.classes, ms, 0, goal) do
+              {:found, dict, _ms} ->
+                method_body = extract_method_from_dict(ctx, class_name, op, dict)
+                {:ok, {:app, {:app, method_body, left_core}, right_core}}
+
+              _ ->
+                :fallback
+            end
+
+          :unknown ->
+            :fallback
+        end
+
+      :error ->
+        :fallback
+    end
+  end
+
+  # Find which class a method belongs to.
+  defp find_class_method(classes, method_name) do
+    Enum.find_value(classes, :error, fn {class_name, decl} ->
+      if Enum.any?(decl.methods, fn {name, _} -> name == method_name end) do
+        {:ok, class_name}
+      end
+    end)
+  end
+
+  # Infer the type of a literal core term for instance search.
+  defp infer_literal_type({:lit, n}) when is_integer(n), do: {:ok, {:vbuiltin, :Int}}
+  defp infer_literal_type({:lit, f}) when is_float(f), do: {:ok, {:vbuiltin, :Float}}
+  defp infer_literal_type({:lit, s}) when is_binary(s), do: {:ok, {:vbuiltin, :String}}
+  defp infer_literal_type({:lit, b}) when is_boolean(b), do: {:ok, {:vbuiltin, :Bool}}
+  defp infer_literal_type(_), do: :unknown
+
+  # Extract a method body from a dictionary constructor term.
+  defp extract_method_from_dict(ctx, class_name, method_name, {:con, _dict_type, _con_name, args}) do
+    class_decl = Map.fetch!(ctx.classes, class_name)
+    n_supers = length(class_decl.superclasses)
+    method_names = Enum.map(class_decl.methods, fn {name, _} -> name end)
+    method_idx = Enum.find_index(method_names, &(&1 == method_name))
+    Enum.at(args, n_supers + method_idx)
+  end
+
+  # Non-constructor dict terms (e.g., variables) — can't extract, fall back.
+  defp extract_method_from_dict(_ctx, _class_name, _method_name, _dict), do: {:builtin, :unknown}
 end
