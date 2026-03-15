@@ -68,6 +68,43 @@ compile({:erased})          → not emitted (dead code after erasure)
 
 Note: `Con`, `Case`, `Data` terms are added in tier 5 (ADTs).
 
+### Dictionary passing (tier 6: type classes)
+
+Type class dictionaries introduce additional compilation rules:
+
+```
+compile(DictCon(class, fields))     → %ClassName{field1: compile(f1), ...}
+compile(DictAccess(dict, method))   → compile(dict).method
+compile(InstanceArg(var))           → variable reference (same as Var — instance args are regular params after erasure)
+```
+
+- **Class declarations** compile to `defmodule` containing a struct definition. Each method becomes a struct field. Superclass dictionaries become nested struct fields.
+- **Instance declarations** compile to a module with a `__dict__/n` function that constructs the struct. Arity `n` equals the number of instance constraints (sub-dictionaries to receive).
+- **Instance arguments** in function signatures compile to regular function parameters — dictionary passing is explicit in the generated Elixir.
+- **Method calls** compile to field access on the dictionary struct followed by application: `dict.method(arg1, arg2)`.
+
+### Dictionary inlining (tier 6: type classes)
+
+When the dictionary at a call site is a compile-time constant (the instance was fully resolved during checking with no remaining flex variables), codegen inlines the dictionary:
+
+1. Replace `DictAccess(dict, method)` with the concrete function value from the resolved instance.
+2. If the method body is a builtin (e.g., `Eq(Int).eq` → `Kernel.==/2`), emit the builtin directly.
+3. If the method body is a user-defined function, emit a direct call to the instance module's function.
+
+Example: `eq(42, 43)` with `Eq(Int)` resolved → `Kernel.==(42, 43)` (no dictionary struct allocated, no field access at runtime).
+
+Inlining is an optimization, not a correctness requirement. Polymorphic call sites where the dictionary is a runtime parameter must use field access.
+
+### Protocol bridge codegen (tier 6: type classes)
+
+When a single-parameter class is annotated with `@protocol`:
+
+1. **Protocol generation**: emit `defprotocol ClassName` with `def method(value, ...)` for each class method. The first argument is the dispatched-on value (the class's type parameter).
+2. **Implementation generation**: for each instance of the class, emit `defimpl ClassName, for: ElixirType` delegating to the instance's method implementations.
+3. **Type mapping**: Haruspex types map to Elixir protocol dispatch types — `Int` → `Integer`, `Float` → `Float`, `String` → `BitString`, ADTs → their generated struct module.
+
+The bridge is one-directional: Haruspex callers always use dictionary passing internally; the protocol exists for Elixir callers to use Haruspex-defined abstractions.
+
 ## Builtin mapping table
 
 | Builtin | Elixir equivalent | Arity |
