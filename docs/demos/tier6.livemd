@@ -2,6 +2,8 @@
 
 # Tier 6: Type Classes
 
+## Section
+
 ```elixir
 Mix.install([
   {:haruspex, path: "/Users/quinn/dev/beam_box/haruspex"},
@@ -48,28 +50,6 @@ IO.inspect(class_ast, label: "Eq class")
 IO.inspect(elem(ord_ast, 4), label: "Ord superclasses")
 ```
 
-<!-- livebook:{"output":true} -->
-
-```
-Eq class: {:class_decl, %Pentiment.Span.Byte{start: 0, length: 47}, :Eq,
- [
-   {:param, %Pentiment.Span.Byte{start: 9, length: 8}, {:a, :omega, false},
-    {:type_universe, %Pentiment.Span.Byte{start: 13, length: 4}, nil}}
- ], [],
- [
-   {:method_sig, %Pentiment.Span.Byte{start: 24, length: 19}, :eq,
-    {:pi, %Pentiment.Span.Byte{start: 29, length: 14}, {:_, :omega, false},
-     {:var, %Pentiment.Span.Byte{start: 29, length: 1}, :a},
-     {:pi, %Pentiment.Span.Byte{start: 34, length: 9}, {:_, :omega, false},
-      {:var, %Pentiment.Span.Byte{start: 34, length: 1}, :a},
-      {:var, %Pentiment.Span.Byte{start: 39, length: 4}, :Bool}}}}
- ]}
-Ord superclasses: [
-  {:constraint, %Pentiment.Span.Byte{start: 21, length: 2}, :Eq,
-   [{:var, %Pentiment.Span.Byte{start: 24, length: 1}, :a}]}
-]
-```
-
 **Instance declarations** provide implementations of class methods for specific types.
 The parser wraps method bodies in `:fn` nodes so parameter bindings are available.
 
@@ -87,13 +67,6 @@ end
 [_class, {:instance_decl, _, :Eq, type_args, _constraints, methods}] = forms
 IO.inspect(type_args, label: "instance head")
 IO.inspect(length(methods), label: "method count")
-```
-
-<!-- livebook:{"output":true} -->
-
-```
-instance head: [{:var, %Pentiment.Span.Byte{start: 61, length: 3}, :Int}]
-method count: 1
 ```
 
 ## Elaboration: classes → dictionary records
@@ -131,21 +104,6 @@ for {name, _type} <- ord_record.fields do
 end
 ```
 
-<!-- livebook:{"output":true} -->
-
-```
-Class: Eq
-Dict name: EqDict
-Methods: [:eq]
-
-Dictionary record fields:
-  eq
-
-OrdDict fields (superclass + methods):
-  eq_super
-  compare
-```
-
 ## Instance search
 
 Instance search is **depth-bounded** to prevent divergence from recursive instances.
@@ -173,14 +131,6 @@ result = Search.search(ctx.instances, ctx.classes, ms, 0, {:Num, [{:vbuiltin, :S
 IO.inspect(result, label: "Num(String)")
 ```
 
-<!-- livebook:{"output":true} -->
-
-```
-Num(Int) dictionary: {:con, :NumDict, :mk_NumDict, [builtin: :add, builtin: :sub, builtin: :mul]}
-Num(Float) dictionary: {:con, :NumDict, :mk_NumDict, [builtin: :fadd, builtin: :fsub, builtin: :fmul]}
-Num(String): {:not_found, {:Num, [vbuiltin: :String]}}
-```
-
 The `Num(Int)` dictionary contains `{:builtin, :add}`, `{:builtin, :sub}`, `{:builtin, :mul}` —
 the same builtins as before. The `Num(Float)` dictionary uses `{:builtin, :fadd}` etc.
 This means **`1.0 + 2.0` now works correctly** — the elaborator resolves through `Num(Float)`
@@ -203,16 +153,6 @@ IO.inspect(float_core, label: "1.0 + 2.0")
 # The builtins are different! Float uses :fadd, Int uses :add
 IO.puts("\nInt builtin:   #{inspect(elem(elem(int_core, 1), 1))}")
 IO.puts("Float builtin: #{inspect(elem(elem(float_core, 1), 1))}")
-```
-
-<!-- livebook:{"output":true} -->
-
-```
-1 + 2: {:app, {:app, {:builtin, :add}, {:lit, 1}}, {:lit, 2}}
-1.0 + 2.0: {:app, {:app, {:builtin, :fadd}, {:lit, 1.0}}, {:lit, 2.0}}
-
-Int builtin:   {:builtin, :add}
-Float builtin: {:builtin, :fadd}
 ```
 
 ## Dictionary inlining in codegen
@@ -246,13 +186,6 @@ IO.puts("Result: #{result}")
 Process.put(:haruspex_codegen_records, prev)
 ```
 
-<!-- livebook:{"output":true} -->
-
-```
-Generated Elixir: 1 + 2
-Result: 3
-```
-
 ## Full pipeline: parse → elaborate → check → codegen
 
 The full pipeline compiles Haruspex source files into callable BEAM modules.
@@ -276,15 +209,6 @@ IO.puts("add_floats(1.5, 2.5) = #{module.add_floats(1.5, 2.5)}")
 IO.puts("mul_ints(6, 7) = #{module.mul_ints(6, 7)}")
 ```
 
-<!-- livebook:{"output":true} -->
-
-```
-Module: Elixir.Math
-add_ints(10, 20) = 30
-add_floats(1.5, 2.5) = 4.0
-mul_ints(6, 7) = 42
-```
-
 ## Instance validation: rejecting invalid operations
 
 The checker creates a fresh meta for the class type parameter when it encounters a
@@ -304,12 +228,6 @@ def bad(x : String, y : String) : String do x + y end
 {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/bad.hx")
 result = Roux.Runtime.query(db, :haruspex_check, {"lib/bad.hx", :bad})
 IO.inspect(result, label: "String + String")
-```
-
-<!-- livebook:{"output":true} -->
-
-```
-String + String: {:error, {:no_instance, :Num, {:vbuiltin, :String}}}
 ```
 
 ## @protocol bridge
@@ -339,18 +257,6 @@ ast = Haruspex.TypeClass.Bridge.compile_protocol(decl, MyApp)
 IO.puts("\nGenerated protocol:\n#{Macro.to_string(ast)}")
 ```
 
-<!-- livebook:{"output":true} -->
-
-```
-tuple size (7 = has protocol flag): 7
-protocol?: true
-
-Generated protocol:
-defprotocol(MyApp.Show) do
-  def show(arg0, arg1)
-end
-```
-
 ## Prelude classes and instances
 
 The prelude provides three classes and six instances out of the box. Every elaboration
@@ -369,14 +275,4 @@ for {class_name, entries} <- ctx.instances do
   end)
   IO.puts("#{class_name} instances: #{Enum.join(heads, " | ")}")
 end
-```
-
-<!-- livebook:{"output":true} -->
-
-```
-Prelude classes: [:Eq, :Num, :Ord]
-
-Eq instances: Int | Float
-Num instances: Int | Float
-Ord instances: Int | Float
 ```
