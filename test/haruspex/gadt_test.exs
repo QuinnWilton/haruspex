@@ -365,4 +365,109 @@ defmodule Haruspex.GADTTest do
                type
     end
   end
+
+  # ============================================================================
+  # :gadt meta kind — post_process ignores unsolved GADT metas
+  # ============================================================================
+
+  describe ":gadt meta kind" do
+    test "unsolved :gadt metas do not cause post_process errors" do
+      ms = MetaState.new()
+      {_id, ms} = MetaState.fresh_meta(ms, {:vdata, :Nat, []}, 0, :gadt)
+      ctx = Check.from_meta_state(ms)
+
+      # post_process should succeed despite the unsolved :gadt meta.
+      assert {:ok, _ctx} = Check.post_process(ctx)
+    end
+
+    test "unsolved :implicit metas still cause post_process errors" do
+      ms = MetaState.new()
+      {id, ms} = MetaState.fresh_meta(ms, {:vdata, :Nat, []}, 0, :implicit)
+      ctx = Check.from_meta_state(ms)
+
+      assert {:error, {:unsolved_meta, ^id, _}} = Check.post_process(ctx)
+    end
+  end
+
+  # ============================================================================
+  # apply_index_equations — type-level reduction in expected types
+  # ============================================================================
+
+  describe "apply_index_equations via check mode" do
+    test "vnil branch: expected Vec(Int, add(n, m)) reduces to Vec(Int, m)" do
+      # When scrutinee is Vec(Int, n) and we match vnil, GADT says n = zero.
+      # The expected type Vec(Int, add(n, m)) should reduce to Vec(Int, m).
+      add_body =
+        {:lam, :omega,
+         {:lam, :omega,
+          {:case, {:var, 1},
+           [
+             {:zero, 0, {:var, 0}},
+             {:succ, 1,
+              {:con, :Nat, :succ, [{:app, {:app, {:def_ref, :add}, {:var, 0}}, {:var, 1}}]}}
+           ]}}}
+
+      ctx = %{check_ctx() | total_defs: %{add: {add_body, true}}}
+      ctx = extend(ctx, :n, {:vdata, :Nat, []}, :zero)
+      ctx = extend(ctx, :m, {:vdata, :Nat, []}, :zero)
+
+      n_val = {:vneutral, {:vdata, :Nat, []}, {:nvar, Context.level(ctx.context) - 2}}
+      m_val = {:vneutral, {:vdata, :Nat, []}, {:nvar, Context.level(ctx.context) - 1}}
+
+      scrut_type = vec_type({:vbuiltin, :Int}, n_val)
+      ctx = extend(ctx, :xs, scrut_type, :omega)
+      ctx = extend(ctx, :ys, vec_type({:vbuiltin, :Int}, m_val), :omega)
+
+      # Expected return type: Vec(Int, add(n, m))
+      add_applied = {:app, {:app, {:def_ref, :add}, {:var, 3}}, {:var, 2}}
+      expected_type_core = {:data, :Vec, [{:builtin, :Int}, add_applied]}
+
+      expected =
+        Haruspex.Eval.eval(
+          %{
+            env: Context.env(ctx.context),
+            metas: %{},
+            defs: ctx.total_defs,
+            fuel: 1000
+          },
+          expected_type_core
+        )
+
+      # case xs do vnil -> ys end
+      # In vnil branch, n = zero, so expected becomes Vec(Int, add(zero, m)) = Vec(Int, m).
+      # ys : Vec(Int, m) should check against this.
+      term = {:case, {:var, 1}, [{:vnil, 0, {:var, 0}}]}
+
+      {:ok, _checked, _ctx} = Check.check(ctx, term, expected)
+    end
+
+    test "vcons branch: rest has refined type Vec(Int, k) under expected Vec(Int, add(n, m))" do
+      add_body =
+        {:lam, :omega,
+         {:lam, :omega,
+          {:case, {:var, 1},
+           [
+             {:zero, 0, {:var, 0}},
+             {:succ, 1,
+              {:con, :Nat, :succ, [{:app, {:app, {:def_ref, :add}, {:var, 0}}, {:var, 1}}]}}
+           ]}}}
+
+      ctx = %{check_ctx() | total_defs: %{add: {add_body, true}}}
+      ctx = extend(ctx, :n, {:vdata, :Nat, []}, :zero)
+      ctx = extend(ctx, :m, {:vdata, :Nat, []}, :zero)
+
+      n_val = {:vneutral, {:vdata, :Nat, []}, {:nvar, Context.level(ctx.context) - 2}}
+
+      scrut_type = vec_type({:vbuiltin, :Int}, n_val)
+      ctx = extend(ctx, :v, scrut_type, :omega)
+
+      # Synth: case v do vcons(x, rest) -> rest end
+      # In the vcons branch, rest : Vec(Int, k) where k is a GADT existential.
+      term = {:case, {:var, 0}, [{:vcons, 2, {:var, 0}}]}
+
+      {:ok, _checked, type, _ctx} = Check.synth(ctx, term)
+      # The result type should be Vec(Int, some_nat) — not a placeholder type.
+      assert {:vdata, :Vec, [{:vbuiltin, :Int}, _k]} = type
+    end
+  end
 end

@@ -287,4 +287,96 @@ defmodule Haruspex.VecTest do
 
     %{env: Context.env(ctx.context), metas: solved, defs: ctx.total_defs, fuel: ctx.fuel}
   end
+
+  # ============================================================================
+  # General vappend — the full dependent types showcase
+  # ============================================================================
+
+  describe "general vappend" do
+    defp add_body do
+      {:lam, :omega,
+       {:lam, :omega,
+        {:case, {:var, 1},
+         [
+           {:zero, 0, {:var, 0}},
+           {:succ, 1,
+            {:con, :Nat, :succ, [{:app, {:app, {:def_ref, :add}, {:var, 0}}, {:var, 1}}]}}
+         ]}}}
+    end
+
+    defp vappend_type do
+      # {n : Nat} -> {m : Nat} -> Vec(Int, n) -> Vec(Int, m) -> Vec(Int, add(n, m))
+      {:pi, :zero, {:data, :Nat, []},
+       {:pi, :zero, {:data, :Nat, []},
+        {:pi, :omega, {:data, :Vec, [{:builtin, :Int}, {:var, 1}]},
+         {:pi, :omega, {:data, :Vec, [{:builtin, :Int}, {:var, 1}]},
+          {:data, :Vec,
+           [{:builtin, :Int}, {:app, {:app, {:def_ref, :add}, {:var, 3}}, {:var, 2}}]}}}}}
+    end
+
+    defp vappend_body do
+      # lam(:zero, lam(:zero, lam(:omega, lam(:omega,
+      #   case var(1) do
+      #     vnil -> var(0)
+      #     vcons(x, rest) -> vcons(x, vappend(rest, var(2)))
+      #   end))))
+      {:lam, :zero,
+       {:lam, :zero,
+        {:lam, :omega,
+         {:lam, :omega,
+          {:case, {:var, 1},
+           [
+             {:vnil, 0, {:var, 0}},
+             {:vcons, 2,
+              {:con, :Vec, :vcons, [{:var, 1}, {:app, {:app, {:var, 6}, {:var, 0}}, {:var, 2}}]}}
+           ]}}}}}
+    end
+
+    test "general vappend type-checks at the checker level" do
+      ctx = %{check_ctx() | total_defs: %{add: {add_body(), true}}}
+
+      assert {:ok, _checked, _ctx} =
+               Check.check_definition(ctx, :vappend, vappend_type(), vappend_body())
+    end
+
+    test "general vappend compiles and runs through full pipeline" do
+      db = Roux.Database.new()
+      Roux.Lang.register(db, Haruspex)
+
+      Roux.Input.set(db, :source_text, "lib/vappend_test.hx", """
+      type Nat = zero | succ(Nat)
+
+      type Vec(a : Type, n : Nat) =
+        vnil : Vec(a, zero)
+        | vcons(a, Vec(a, n)) : Vec(a, succ(n))
+
+      @total
+      def add(n : Nat, m : Nat) : Nat do
+        case n do
+          zero -> m
+          succ(k) -> succ(add(k, m))
+        end
+      end
+
+      @total
+      def vappend({n : Nat}, {m : Nat}, xs : Vec(Int, n), ys : Vec(Int, m)) : Vec(Int, add(n, m)) do
+        case xs do
+          vnil -> ys
+          vcons(x, rest) -> vcons(x, vappend(rest, ys))
+        end
+      end
+      """)
+
+      {:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, "lib/vappend_test.hx")
+
+      v1 = mod.vcons(1, mod.vcons(2, mod.vnil()))
+      v2 = mod.vcons(3, mod.vnil())
+      result = mod.vappend(v1, v2)
+
+      assert {:vcons, 1, {:vcons, 2, {:vcons, 3, :vnil}}} = result
+
+      :code.purge(mod)
+      :code.delete(mod)
+    end
+  end
 end

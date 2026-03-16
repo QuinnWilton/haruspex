@@ -1852,4 +1852,88 @@ defmodule Haruspex.UnifyTest do
       assert {:ok, _} = Unify.unify(ms, 0, ne, ne)
     end
   end
+
+  # ============================================================================
+  # Bare meta solving with context variables
+  # ============================================================================
+
+  describe "bare meta solving with nvar" do
+    test "bare meta solves to in-scope nvar" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      # Meta created at level 5 — variables at levels 0..4 are in scope.
+      {id, _meta, ms} = make_meta(ms, int, 5)
+
+      meta_val = {:vneutral, int, {:nmeta, id}}
+      y = Value.fresh_var(3, int)
+
+      # nvar(3) is in scope (3 < 5). Should solve meta to nvar(3).
+      assert {:ok, ms} = Unify.unify(ms, 6, meta_val, y)
+      assert {:solved, ^y} = MetaState.lookup(ms, id)
+    end
+
+    test "bare meta rejects out-of-scope nvar" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      # Meta created at level 2 — only variables at levels 0..1 are in scope.
+      {id, _meta, ms} = make_meta(ms, int, 2)
+
+      meta_val = {:vneutral, int, {:nmeta, id}}
+      y = Value.fresh_var(5, int)
+
+      # nvar(5) is out of scope (5 >= 2).
+      assert {:error, {:scope_escape, ^id, _}} = Unify.unify(ms, 6, meta_val, y)
+    end
+  end
+
+  # ============================================================================
+  # ncase neutral unification
+  # ============================================================================
+
+  describe "ncase neutral unification" do
+    test "two stuck cases on the same scrutinee unify" do
+      ms = MetaState.new()
+      nat = {:vdata, :Nat, []}
+
+      # Two stuck cases: case nvar(0) of ... with different captured envs.
+      branches = [{:zero, 0, {:lit, 1}}, {:succ, 1, {:lit, 2}}]
+      ne1 = {:ncase, {:nvar, 0}, branches, [:env_a]}
+      ne2 = {:ncase, {:nvar, 0}, branches, [:env_b]}
+
+      lhs = {:vneutral, nat, ne1}
+      rhs = {:vneutral, nat, ne2}
+
+      assert {:ok, _ms} = Unify.unify(ms, 1, lhs, rhs)
+    end
+
+    test "two stuck cases on different scrutinees fail" do
+      ms = MetaState.new()
+      nat = {:vdata, :Nat, []}
+
+      branches = [{:zero, 0, {:lit, 1}}, {:succ, 1, {:lit, 2}}]
+      ne1 = {:ncase, {:nvar, 0}, branches, []}
+      ne2 = {:ncase, {:nvar, 1}, branches, []}
+
+      lhs = {:vneutral, nat, ne1}
+      rhs = {:vneutral, nat, ne2}
+
+      assert {:error, _} = Unify.unify(ms, 2, lhs, rhs)
+    end
+
+    test "stuck cases on same meta scrutinee unify" do
+      ms = MetaState.new()
+      nat = {:vdata, :Nat, []}
+      {_id, _meta, ms} = make_meta(ms, nat, 2)
+
+      # Both stuck on the same unsolved meta — should be equal.
+      branches = [{:zero, 0, {:lit, 1}}, {:succ, 1, {:lit, 2}}]
+      ne1 = {:ncase, {:nmeta, 0}, branches, [:env_a]}
+      ne2 = {:ncase, {:nmeta, 0}, branches, [:env_b]}
+
+      lhs = {:vneutral, nat, ne1}
+      rhs = {:vneutral, nat, ne2}
+
+      assert {:ok, _ms} = Unify.unify(ms, 2, lhs, rhs)
+    end
+  end
 end
