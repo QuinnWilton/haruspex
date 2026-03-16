@@ -334,9 +334,12 @@ defmodule Haruspex.QueriesTest do
   # ============================================================================
 
   describe "stub queries" do
-    test "totality returns not_implemented", %{db: db} do
-      assert {:error, :not_implemented} =
-               Roux.Runtime.query(db, :haruspex_totality, {@uri, :foo})
+    test "totality checks a definition", %{db: db} do
+      set_source(db, "def dummy(x : Int) : Int do x end")
+      {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, @uri)
+
+      # dummy is trivially total (no recursion).
+      assert {:ok, :total} = Roux.Runtime.query(db, :haruspex_totality, {@uri, :dummy})
     end
 
     test "hover returns nil", %{db: db} do

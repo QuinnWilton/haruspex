@@ -279,7 +279,15 @@ defmodule Haruspex do
 
     case check_result do
       {:ok, checked_body, _ctx} ->
-        {:ok, {type_core, checked_body}}
+        # If @total, verify structural recursion.
+        if def_total?(db, uri, name) do
+          case Haruspex.Totality.check_totality(name, type_core, checked_body, adts) do
+            :total -> {:ok, {type_core, checked_body}}
+            {:not_total, reason} -> {:error, reason}
+          end
+        else
+          {:ok, {type_core, checked_body}}
+        end
 
       {:error, _} = err ->
         err
@@ -356,9 +364,16 @@ defmodule Haruspex do
   # Stubs for later tiers
   # ============================================================================
 
-  defquery :haruspex_totality, key: key do
-    _ = {db, key}
-    {:error, :not_implemented}
+  defquery :haruspex_totality, key: {uri, name} do
+    {:ok, {type_core, body_core}} = Roux.Runtime.query!(db, :haruspex_check, {uri, name})
+
+    {:ok, {adts, _records, _classes, _instances}} =
+      Roux.Runtime.query!(db, :haruspex_elaborate_types, uri)
+
+    case Haruspex.Totality.check_totality(name, type_core, body_core, adts) do
+      :total -> {:ok, :total}
+      {:not_total, reason} -> {:error, reason}
+    end
   end
 
   defquery :haruspex_hover, key: key do
@@ -500,6 +515,15 @@ defmodule Haruspex do
 
       :error ->
         []
+    end
+  end
+
+  defp def_total?(db, uri, name) do
+    {:ok, entity_ids} = Roux.Runtime.query!(db, :haruspex_parse, uri)
+
+    case find_entity(db, entity_ids, name) do
+      nil -> false
+      entity_id -> Roux.Runtime.field(db, Definition, entity_id, :total?) == true
     end
   end
 
