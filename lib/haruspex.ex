@@ -133,13 +133,16 @@ defmodule Haruspex do
     imports = Roux.Runtime.query(db, :haruspex_file_imports, uri)
     no_prelude? = file_no_prelude?(db, uri)
 
+    file_defs = collect_file_def_names(db, uri)
+
     ctx =
       Haruspex.Elaborate.new(
         db: db,
         uri: uri,
         imports: imports,
         source_roots: source_roots(),
-        no_prelude?: no_prelude?
+        no_prelude?: no_prelude?,
+        file_defs: file_defs
       )
 
     # Elaborate type declarations first (order matters for mutual references).
@@ -249,15 +252,18 @@ defmodule Haruspex do
       Roux.Runtime.query!(db, :haruspex_elaborate_types, uri)
 
     total_defs = collect_total_defs(db, uri)
+    fuel = def_fuel(db, uri, name)
 
     ctx = %{
       Haruspex.Check.new()
       | db: db,
+        uri: uri,
         adts: adts,
         records: records,
         classes: classes,
         instances: instances,
-        total_defs: total_defs
+        total_defs: total_defs,
+        fuel: fuel
     }
 
     # Check if this def belongs to a mutual group.
@@ -500,6 +506,8 @@ defmodule Haruspex do
     {:ok, {adts, records, classes, instances}} =
       Roux.Runtime.query!(db, :haruspex_elaborate_types, uri)
 
+    file_defs = collect_file_def_names(db, uri)
+
     Haruspex.Elaborate.new(
       db: db,
       uri: uri,
@@ -509,8 +517,21 @@ defmodule Haruspex do
       adts: adts,
       records: records,
       classes: classes,
-      instances: instances
+      instances: instances,
+      file_defs: file_defs
     )
+  end
+
+  defp collect_file_def_names(db, uri) do
+    case Roux.Runtime.query(db, :haruspex_parse, uri) do
+      {:ok, entity_ids} ->
+        entity_ids
+        |> Enum.map(fn id -> Roux.Runtime.field(db, Definition, id, :name) end)
+        |> MapSet.new()
+
+      _ ->
+        MapSet.new()
+    end
   end
 
   defp file_mutual_groups(db, uri) do
@@ -542,6 +563,15 @@ defmodule Haruspex do
         acc
       end
     end)
+  end
+
+  defp def_fuel(db, uri, name) do
+    {:ok, entity_ids} = Roux.Runtime.query!(db, :haruspex_parse, uri)
+
+    case find_entity(db, entity_ids, name) do
+      nil -> 1000
+      entity_id -> Roux.Runtime.field(db, Definition, entity_id, :fuel) || 1000
+    end
   end
 
   defp def_total?(db, uri, name) do

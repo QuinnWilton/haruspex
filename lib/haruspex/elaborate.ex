@@ -42,7 +42,8 @@ defmodule Haruspex.Elaborate do
     :adts,
     :records,
     :classes,
-    :instances
+    :instances,
+    :file_defs
   ]
   defstruct [
     :names,
@@ -60,7 +61,8 @@ defmodule Haruspex.Elaborate do
     :adts,
     :records,
     :classes,
-    :instances
+    :instances,
+    :file_defs
   ]
 
   @type import_info :: %{
@@ -84,7 +86,8 @@ defmodule Haruspex.Elaborate do
           adts: %{atom() => Haruspex.ADT.adt_decl()},
           records: %{atom() => Haruspex.Record.record_decl()},
           classes: %{atom() => Haruspex.TypeClass.class_decl()},
-          instances: Haruspex.TypeClass.Search.instance_db()
+          instances: Haruspex.TypeClass.Search.instance_db(),
+          file_defs: MapSet.t(atom())
         }
 
   # ============================================================================
@@ -129,7 +132,8 @@ defmodule Haruspex.Elaborate do
       adts: Map.merge(prelude_adts, Keyword.get(opts, :adts, %{})),
       records: Map.merge(prelude_records, Keyword.get(opts, :records, %{})),
       classes: Map.merge(prelude_classes, Keyword.get(opts, :classes, %{})),
-      instances: Map.merge(prelude_instances, Keyword.get(opts, :instances, %{}))
+      instances: Map.merge(prelude_instances, Keyword.get(opts, :instances, %{})),
+      file_defs: Keyword.get(opts, :file_defs, MapSet.new())
     }
   end
 
@@ -148,6 +152,7 @@ defmodule Haruspex.Elaborate do
       {:global, core} -> {:ok, core, ctx}
       {:constructor, type_name, con_name} -> {:ok, {:con, type_name, con_name, []}, ctx}
       {:adt_type, type_name} -> {:ok, {:data, type_name, []}, ctx}
+      {:def_ref, def_name} -> {:ok, {:def_ref, def_name}, ctx}
       :not_found -> {:error, {:unbound_variable, name, span}}
     end
   end
@@ -1237,6 +1242,7 @@ defmodule Haruspex.Elaborate do
           | {:global, Core.expr()}
           | {:adt_type, atom()}
           | {:constructor, atom(), atom()}
+          | {:def_ref, atom()}
           | :not_found
   defp resolve_name(ctx, name) do
     # 1. Check prelude (builtins) first.
@@ -1263,8 +1269,13 @@ defmodule Haruspex.Elaborate do
                     {:constructor, type_name, name}
 
                   :error ->
-                    # 5. Check imported names (open imports).
-                    resolve_imported_name(ctx, name)
+                    # 5. Check same-file definitions (for type-level references).
+                    if MapSet.member?(ctx.file_defs, name) do
+                      {:def_ref, name}
+                    else
+                      # 6. Check imported names (open imports).
+                      resolve_imported_name(ctx, name)
+                    end
                 end
             end
         end

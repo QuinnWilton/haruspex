@@ -43,13 +43,15 @@ defmodule Haruspex.Check do
     :names,
     :meta_state,
     :db,
+    :uri,
     hole_reports: [],
     adts: %{},
     records: %{},
     classes: %{},
     instances: %{},
     class_param_metas: %{},
-    total_defs: %{}
+    total_defs: %{},
+    fuel: 1000
   ]
 
   @type t :: %__MODULE__{
@@ -57,13 +59,15 @@ defmodule Haruspex.Check do
           names: [atom()],
           meta_state: MetaState.t(),
           db: term() | nil,
+          uri: String.t() | nil,
           hole_reports: [hole_report()],
           adts: %{atom() => Haruspex.ADT.adt_decl()},
           records: %{atom() => Haruspex.Record.record_decl()},
           classes: %{atom() => Haruspex.TypeClass.class_decl()},
           instances: Haruspex.TypeClass.Search.instance_db(),
           class_param_metas: %{non_neg_integer() => atom()},
-          total_defs: %{atom() => {Haruspex.Core.expr(), boolean()}}
+          total_defs: %{atom() => {Haruspex.Core.expr(), boolean()}},
+          fuel: non_neg_integer()
         }
 
   # ============================================================================
@@ -322,6 +326,18 @@ defmodule Haruspex.Check do
 
       result_type = result_type || {:vtype, {:llit, 0}}
       {:ok, {:case, scrut_term, Enum.reverse(checked_branches)}, result_type, ctx}
+    end
+  end
+
+  # Definition reference: look up type from database.
+  def synth(ctx, {:def_ref, name}) do
+    if ctx.db do
+      case synth_def_ref(ctx, name) do
+        {:ok, _, _, _} = result -> result
+        :error -> {:error, {:unbound_variable, name, nil}}
+      end
+    else
+      {:error, {:unbound_variable, name, nil}}
     end
   end
 
@@ -730,6 +746,8 @@ defmodule Haruspex.Check do
   def zonk(ms, level, {:record_proj, field, expr}),
     do: {:record_proj, field, zonk(ms, level, expr)}
 
+  def zonk(_ms, _level, {:def_ref, _} = term), do: term
+
   def zonk(ms, level, {:case, scrutinee, branches}),
     do:
       {:case, zonk(ms, level, scrutinee),
@@ -989,7 +1007,7 @@ defmodule Haruspex.Check do
       |> Enum.filter(fn {_, entry} -> match?({:solved, _}, entry) end)
       |> Map.new(fn {id, {:solved, val}} -> {id, {:solved, val}} end)
 
-    %{env: env, metas: solved, defs: ctx.total_defs, fuel: 1000}
+    %{env: env, metas: solved, defs: ctx.total_defs, fuel: ctx.fuel}
   end
 
   defp pick_binder_name(ctx) do
@@ -1005,6 +1023,28 @@ defmodule Haruspex.Check do
       type_str = Pretty.pretty(binding.type, ctx.names, Context.level(ctx.context))
       {binding.name, type_str}
     end)
+  end
+
+  # ============================================================================
+  # Internal — def_ref synthesis
+  # ============================================================================
+
+  # Synthesize the type of a same-file definition reference.
+  defp synth_def_ref(ctx, name) do
+    uri = ctx.uri
+
+    if uri do
+      case Roux.Runtime.query(ctx.db, :haruspex_elaborate, {uri, name}) do
+        {:ok, {type_core, _body}} ->
+          type_val = eval_in(ctx, type_core)
+          {:ok, {:def_ref, name}, type_val, ctx}
+
+        _ ->
+          :error
+      end
+    else
+      :error
+    end
   end
 
   # ============================================================================

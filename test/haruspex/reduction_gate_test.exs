@@ -224,6 +224,58 @@ defmodule Haruspex.ReductionGateTest do
   end
 
   # ============================================================================
+  # Pipeline integration: def_ref in types
+  # ============================================================================
+
+  describe "pipeline: def_ref in types" do
+    test "same-file definition reference resolves in type annotation" do
+      db = Roux.Database.new()
+      Roux.Lang.register(db, Haruspex)
+
+      Roux.Input.set(db, :source_text, "lib/test.hx", """
+      type Nat = zero | succ(Nat)
+
+      @total
+      def add(n : Nat, m : Nat) : Nat do
+        case n do
+          zero -> m
+          succ(k) -> succ(add(k, m))
+        end
+      end
+
+      def use_add(x : Nat) : Nat do
+        add(x, zero)
+      end
+      """)
+
+      {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/test.hx")
+      # use_add references add (a same-file def) — should elaborate and check.
+      {:ok, {_type, _body}} =
+        Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :use_add})
+    end
+
+    test "non-total same-file def reference stays opaque in types" do
+      db = Roux.Database.new()
+      Roux.Lang.register(db, Haruspex)
+
+      Roux.Input.set(db, :source_text, "lib/test.hx", """
+      type Nat = zero | succ(Nat)
+
+      def mystery(n : Nat) : Nat do n end
+
+      def use_mystery(x : Nat) : Nat do
+        mystery(x)
+      end
+      """)
+
+      {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/test.hx")
+      # mystery is not @total — stays opaque, but the function still checks fine.
+      {:ok, {_type, _body}} =
+        Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :use_mystery})
+    end
+  end
+
+  # ============================================================================
   # @fuel annotation
   # ============================================================================
 

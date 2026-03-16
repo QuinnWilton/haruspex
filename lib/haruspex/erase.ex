@@ -157,6 +157,7 @@ defmodule Haruspex.Erase do
   defp check({:builtin, name}, _type, _ctx), do: {:builtin, name}
   defp check({:extern, mod, fun, arity}, _type, _ctx), do: {:extern, mod, fun, arity}
   defp check({:global, mod, name, arity}, _type, _ctx), do: {:global, mod, name, arity}
+  defp check({:def_ref, name}, _type, _ctx), do: {:def_ref, name}
 
   # ============================================================================
   # Synth mode: erase and return {erased_term, type}
@@ -200,6 +201,12 @@ defmodule Haruspex.Erase do
     raise Haruspex.CompilerBug,
           "cannot synthesize type of extern #{inspect(mod)}.#{fun}/#{arity} during erasure; " <>
             "externs should be erased in check mode with a known type"
+  end
+
+  # Definition reference: treat similarly to global — build an omega-only type from arity.
+  defp synth({:def_ref, name}, _ctx) do
+    # def_ref doesn't carry arity info; treat as opaque runtime value.
+    {{:def_ref, name}, {:type, {:llit, 0}}}
   end
 
   # Global: synthesize an omega-only pi type from the arity.

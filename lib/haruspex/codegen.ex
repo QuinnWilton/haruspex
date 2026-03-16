@@ -300,6 +300,11 @@ defmodule Haruspex.Codegen do
     end
   end
 
+  # Definition reference (same-file function used in types or direct calls).
+  defp compile({:def_ref, name}, _names) do
+    {name, [], []}
+  end
+
   # Literal.
   defp compile({:lit, v}, _names), do: Macro.escape(v)
 
@@ -805,6 +810,8 @@ defmodule Haruspex.Codegen do
   defp subst_self({:record_proj, field, expr}, self_ix, name, depth) do
     {:record_proj, field, subst_self(expr, self_ix, name, depth)}
   end
+
+  defp subst_self({:def_ref, _} = term, _self_ix, _name, _depth), do: term
 
   defp subst_self(term, _self_ix, _name, _depth), do: term
 end
