@@ -339,6 +339,31 @@ defmodule Haruspex.VecTest do
                Check.check_definition(ctx, :vappend, vappend_type(), vappend_body())
     end
 
+    test "general vmap type-checks at the checker level" do
+      vmap_type =
+        {:pi, :zero, {:data, :Nat, []},
+         {:pi, :omega, {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}},
+          {:pi, :omega, {:data, :Vec, [{:builtin, :Int}, {:var, 1}]},
+           {:data, :Vec, [{:builtin, :Int}, {:var, 2}]}}}}
+
+      vmap_body =
+        {:lam, :zero,
+         {:lam, :omega,
+          {:lam, :omega,
+           {:case, {:var, 0},
+            [
+              {:vnil, 0, {:con, :Vec, :vnil, []}},
+              {:vcons, 2,
+               {:con, :Vec, :vcons,
+                [{:app, {:var, 3}, {:var, 1}}, {:app, {:app, {:var, 5}, {:var, 3}}, {:var, 0}}]}}
+            ]}}}}
+
+      ctx = check_ctx()
+
+      assert {:ok, _checked, _ctx} =
+               Check.check_definition(ctx, :vmap, vmap_type, vmap_body)
+    end
+
     test "general vappend compiles and runs through full pipeline" do
       db = Roux.Database.new()
       Roux.Lang.register(db, Haruspex)

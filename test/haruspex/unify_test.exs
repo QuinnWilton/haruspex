@@ -1854,6 +1854,107 @@ defmodule Haruspex.UnifyTest do
   end
 
   # ============================================================================
+  # ndef_ref neutral unification
+  # ============================================================================
+
+  describe "ndef_ref neutral unification" do
+    test "same ndef_ref neutrals unify" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      ne1 = {:vneutral, int, {:ndef_ref, :my_fn}}
+      ne2 = {:vneutral, int, {:ndef_ref, :my_fn}}
+
+      assert {:ok, _ms} = Unify.unify(ms, 0, ne1, ne2)
+    end
+
+    test "different ndef_ref neutrals fail" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+
+      ne1 = {:vneutral, int, {:ndef_ref, :fn_a}}
+      ne2 = {:vneutral, int, {:ndef_ref, :fn_b}}
+
+      assert {:error, {:mismatch, {:ndef_ref, :fn_a}, {:ndef_ref, :fn_b}}} =
+               Unify.unify(ms, 0, ne1, ne2)
+    end
+  end
+
+  # ============================================================================
+  # occurs_in_neutral? for ndef_ref
+  # ============================================================================
+
+  describe "occurs check — ndef_ref" do
+    test "meta does not occur in ndef_ref" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {_id, meta_val, ms} = make_meta(ms, int, 0)
+
+      rhs = {:vneutral, int, {:ndef_ref, :some_fn}}
+
+      assert {:ok, _} = Unify.unify(ms, 0, meta_val, rhs)
+    end
+  end
+
+  # ============================================================================
+  # scope_ok_neutral? for ndef_ref
+  # ============================================================================
+
+  describe "scope check — ndef_ref" do
+    test "ndef_ref passes scope check via pattern unification" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      rhs = {:vneutral, int, {:ndef_ref, :some_fn}}
+
+      assert {:ok, _} = Unify.unify(ms, 1, flex, rhs)
+    end
+  end
+
+  # ============================================================================
+  # rename_vars for def_ref, record_proj, let, spanned, case, nil map
+  # ============================================================================
+
+  describe "rename_vars — def_ref via abstract" do
+    test "rhs with ndef_ref exercises rename_vars :def_ref path" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+      # A ndef_ref neutral quotes to {:def_ref, name}, which goes through
+      # rename_vars def_ref clause.
+      rhs = {:vneutral, int, {:ndef_ref, :some_fn}}
+
+      assert {:ok, ms} = Unify.unify(ms, 1, flex, rhs)
+      assert {:solved, _} = MetaState.lookup(ms, id)
+    end
+  end
+
+  describe "rename_vars — case with __lit and constructor branches" do
+    test "rhs with ncase containing constructor branch exercises rename_vars :case" do
+      ms = MetaState.new()
+      int = {:vbuiltin, :Int}
+      {id, _meta, ms} = make_meta(ms, int, 0)
+
+      x = Value.fresh_var(0, int)
+      flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
+
+      # Build a neutral case with a constructor branch (arity > 0).
+      # The body references variables that need renaming.
+      ncase_ne = {:ncase, {:nvar, 0}, [{:Just, 1, {:var, 0}}], [x]}
+      rhs = {:vneutral, int, ncase_ne}
+
+      assert {:ok, ms} = Unify.unify(ms, 1, flex, rhs)
+      assert {:solved, _} = MetaState.lookup(ms, id)
+    end
+  end
+
+  # ============================================================================
   # Bare meta solving with context variables
   # ============================================================================
 

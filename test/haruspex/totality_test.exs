@@ -321,4 +321,475 @@ defmodule Haruspex.TotalityTest do
       {:ok, _} = Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :id})
     end
   end
+
+  # ============================================================================
+  # do_check for leaf-like term forms
+  # ============================================================================
+
+  describe "do_check for various core term forms" do
+    test "con term with recursive call in args is detected" do
+      # def f(n : Nat) : Nat do
+      #   case n do
+      #     zero -> zero
+      #     succ(k) -> con(:Nat, :succ, [f(k)])
+      #   end
+      # end
+      # f=var(0), lam(n): n=var(0), f=var(1)
+      # In succ branch (arity 1): k=var(0), n=var(1), f=var(2)
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:con, :Nat, :zero, []}},
+            {:succ, 1, {:con, :Nat, :succ, [{:app, {:var, 2}, {:var, 0}}]}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "pair term in body is checked" do
+      # def f(n : Nat) : (Nat, Nat) do
+      #   case n do
+      #     zero -> pair(zero, zero)
+      #     succ(k) -> pair(f(k), zero)
+      #   end
+      # end
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:pair, {:con, :Nat, :zero, []}, {:con, :Nat, :zero, []}}},
+            {:succ, 1, {:pair, {:app, {:var, 2}, {:var, 0}}, {:con, :Nat, :zero, []}}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "fst term in body is checked" do
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:fst, {:pair, {:con, :Nat, :zero, []}, {:con, :Nat, :zero, []}}}},
+            {:succ, 1, {:fst, {:pair, {:app, {:var, 2}, {:var, 0}}, {:con, :Nat, :zero, []}}}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "snd term in body is checked" do
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:snd, {:pair, {:con, :Nat, :zero, []}, {:con, :Nat, :zero, []}}}},
+            {:succ, 1, {:snd, {:pair, {:con, :Nat, :zero, []}, {:app, {:var, 2}, {:var, 0}}}}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "record_proj term in body is checked" do
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:record_proj, :field, {:con, :Nat, :zero, []}}},
+            {:succ, 1, {:record_proj, :field, {:app, {:var, 2}, {:var, 0}}}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "extern term is a leaf — no recursion detected" do
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:extern, Kernel, :abs, 1}},
+            {:succ, 1, {:extern, Kernel, :abs, 1}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "global term is a leaf — no recursion detected" do
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:global, TestMod, :helper, 0}},
+            {:succ, 1, {:global, TestMod, :helper, 0}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "def_ref is a leaf (no recursion possible through it)" do
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      # Body contains a def_ref to some other function.
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:app, {:var, 1}, {:con, :Nat, :zero, []}}},
+            {:succ, 1, {:app, {:var, 2}, {:var, 0}}}
+          ]}}
+
+      # This is a non-structural recursion — f(zero) in the zero branch.
+      # But wait, var(1) is f (self_ix = 1 under 1 lambda).
+      # In zero branch (arity 0): f=var(1), n=var(0)
+      # app(var(1), ...) is a self-call with arg {:con, :Nat, :zero, []} — not a subterm.
+      # In succ branch (arity 1): k=var(0), n=var(1), f=var(2)
+      # app(var(2), var(0)) — k is a subterm. But the zero branch fails.
+      assert {:not_total, _} = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "let term in body is checked for recursion" do
+      # def f(n : Nat) : Nat do
+      #   case n do
+      #     zero -> zero
+      #     succ(k) -> let x = f(k) in x
+      #   end
+      # end
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:con, :Nat, :zero, []}},
+            {:succ, 1, {:let, {:app, {:var, 2}, {:var, 0}}, {:var, 0}}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "lam term in body is checked for recursion" do
+      # def f(n : Nat) : (Int -> Nat) do
+      #   case n do
+      #     zero -> lam(_ -> zero)
+      #     succ(k) -> lam(_ -> f(k))
+      #   end
+      # end
+      # Under 1 lam for n: n=var(0), f=var(1)
+      # In succ branch (arity 1): k=var(0), n=var(1), f=var(2)
+      # In lam body (+1): _=var(0), k=var(1), n=var(2), f=var(3)
+      # f(k) = app(var(3), var(1))
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:lam, :omega, {:con, :Nat, :zero, []}}},
+            {:succ, 1, {:lam, :omega, {:app, {:var, 3}, {:var, 1}}}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+  end
+
+  # ============================================================================
+  # check_branches with various pattern types
+  # ============================================================================
+
+  describe "check_branches with pattern types" do
+    test "__lit branch in non-candidate case is checked" do
+      # A function that recurses but the inner case uses literal patterns.
+      # def f(n : Nat) : Nat do
+      #   case n do
+      #     zero -> zero
+      #     succ(k) ->
+      #       case k do        (case on subterm k — not the candidate param directly)
+      #         zero -> zero    (this would be __lit-like if we had lit patterns; use constructor patterns)
+      #         succ(j) -> f(j) (recurse on j, subterm of k)
+      #       end
+      #   end
+      # end
+      # Use a non-candidate case with a wildcard to exercise check_branches.
+      type =
+        {:pi, :omega, {:data, :Nat, []}, {:pi, :omega, {:builtin, :Int}, {:data, :Nat, []}}}
+
+      # f(n, x): case n of zero -> zero; succ(k) -> case x of _ -> f(k, x) end
+      # Under 2 lams: n=var(1), x=var(0), f=var(2)
+      # In succ branch (arity 1): k=var(0), n=var(2), x=var(1), f=var(3)
+      # In wildcard branch (arity 0) of inner case: same indices
+      # f(k, x) = app(app(var(3), var(0)), var(1))
+      body =
+        {:lam, :omega,
+         {:lam, :omega,
+          {:case, {:var, 1},
+           [
+             {:zero, 0, {:con, :Nat, :zero, []}},
+             {:succ, 1,
+              {:case, {:var, 1},
+               [
+                 {:_, 0, {:app, {:app, {:var, 3}, {:var, 0}}, {:var, 1}}}
+               ]}}
+           ]}}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "wildcard branch with arity > 0 in non-candidate case" do
+      # Same as above but the wildcard introduces bindings.
+      type =
+        {:pi, :omega, {:data, :Nat, []}, {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}}
+
+      # f(n, m): case n of zero -> zero; succ(k) -> case m of _(x) -> f(k, x) end
+      # Under 2 lams: n=var(1), m=var(0), f=var(2)
+      # In succ branch (arity 1): k=var(0), n=var(2), m=var(1), f=var(3)
+      # In wildcard branch (arity 1): x=var(0), k=var(1), n=var(3), m=var(2), f=var(4)
+      # f(k, x) = app(app(var(4), var(1)), var(0))
+      body =
+        {:lam, :omega,
+         {:lam, :omega,
+          {:case, {:var, 1},
+           [
+             {:zero, 0, {:con, :Nat, :zero, []}},
+             {:succ, 1,
+              {:case, {:var, 1},
+               [
+                 {:_, 1, {:app, {:app, {:var, 4}, {:var, 1}}, {:var, 0}}}
+               ]}}
+           ]}}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "literal branch in case on candidate param" do
+      # Exercise check_case_branches __lit branch.
+      # Nat has constructors, but if we pretend we have a case with __lit:
+      # This tests the branch directly. Let's construct a case with __lit on candidate.
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      # f(n): case n of __lit(true) -> zero; succ(k) -> f(k)
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:__lit, true, {:con, :Nat, :zero, []}},
+            {:succ, 1, {:app, {:var, 2}, {:var, 0}}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "wildcard with arity 0 in case on candidate param" do
+      # Exercise check_case_branches {:_, 0, body} branch.
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      # f(n): case n of succ(k) -> f(k); _ -> zero
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:succ, 1, {:app, {:var, 2}, {:var, 0}}},
+            {:_, 0, {:con, :Nat, :zero, []}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "wildcard with arity > 0 in case on candidate param" do
+      # Exercise check_case_branches {:_, arity, body} with arity > 0.
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      # f(n): case n of _(k) -> f(k)
+      # Under lam: n=var(0), f=var(1)
+      # In wildcard branch (arity 1): k=var(0), n=var(1), f=var(2)
+      # f(k) = app(var(2), var(0))
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:_, 1, {:app, {:var, 2}, {:var, 0}}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "__lit branch in check_branches (non-candidate case)" do
+      # Exercise the __lit path in check_branches (case NOT on candidate).
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      # f(n): case n of zero -> zero; succ(k) ->
+      #   case 42 of    <-- not on candidate
+      #     __lit(42) -> f(k)
+      #   end
+      # Under lam: n=var(0), f=var(1)
+      # In succ branch (arity 1): k=var(0), n=var(1), f=var(2)
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:con, :Nat, :zero, []}},
+            {:succ, 1,
+             {:case, {:lit, 42},
+              [
+                {:__lit, 42, {:app, {:var, 2}, {:var, 0}}}
+              ]}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+  end
+
+  # ============================================================================
+  # find_recursive_calls in various term contexts
+  # ============================================================================
+
+  describe "find_recursive_calls for different term forms" do
+    test "recursive call inside con args is found" do
+      # f(n): case n of zero -> zero; succ(k) -> con(:Nat, :succ, [f(k)])
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:con, :Nat, :zero, []}},
+            {:succ, 1, {:con, :Nat, :succ, [{:app, {:var, 2}, {:var, 0}}]}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "recursive call inside pair is found" do
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:pair, {:con, :Nat, :zero, []}, {:con, :Nat, :zero, []}}},
+            {:succ, 1, {:pair, {:app, {:var, 2}, {:var, 0}}, {:con, :Nat, :zero, []}}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "recursive call inside fst is found" do
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:con, :Nat, :zero, []}},
+            {:succ, 1, {:fst, {:pair, {:app, {:var, 2}, {:var, 0}}, {:con, :Nat, :zero, []}}}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "recursive call inside snd is found" do
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:con, :Nat, :zero, []}},
+            {:succ, 1, {:snd, {:pair, {:con, :Nat, :zero, []}, {:app, {:var, 2}, {:var, 0}}}}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "recursive call inside let is found" do
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      # In succ branch: k=var(0), n=var(1), f=var(2)
+      # let x = f(k) in x
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:con, :Nat, :zero, []}},
+            {:succ, 1, {:let, {:app, {:var, 2}, {:var, 0}}, {:var, 0}}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "recursive call inside lam is found" do
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      # In succ branch: k=var(0), n=var(1), f=var(2)
+      # lam(_ -> f(k)) means under +1 binder: _=var(0), k=var(1), n=var(2), f=var(3)
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:lam, :omega, {:con, :Nat, :zero, []}}},
+            {:succ, 1, {:lam, :omega, {:app, {:var, 3}, {:var, 1}}}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+
+    test "recursive call in case __lit branch is found" do
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      # In succ branch: k=var(0), f=var(2)
+      # Nested case with __lit pattern.
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:con, :Nat, :zero, []}},
+            {:succ, 1,
+             {:case, {:lit, 42},
+              [
+                {:__lit, 42, {:app, {:var, 2}, {:var, 0}}}
+              ]}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+  end
+
+  # ============================================================================
+  # Non-self-call app parts are checked
+  # ============================================================================
+
+  describe "non-self-call app parts" do
+    test "app that is not a self-call still checks sub-terms" do
+      # f(n): case n of zero -> zero; succ(k) -> g(f(k))
+      # where g is some external function at var(3) — wait, no. Let's think:
+      # Under check_def: f=var(0), lam(n): n=var(0), f=var(1)
+      # If body uses app(some_fn, app(f, k)), the outer app is not a self-call
+      # but the inner app IS a self-call.
+      # In succ branch (arity 1): k=var(0), n=var(1), f=var(2)
+      # app(lit(42), app(var(2), var(0))) — outer is not self-call, inner is.
+      type = {:pi, :omega, {:data, :Nat, []}, {:data, :Nat, []}}
+
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {:zero, 0, {:con, :Nat, :zero, []}},
+            {:succ, 1, {:app, {:lit, :some_fn}, {:app, {:var, 2}, {:var, 0}}}}
+          ]}}
+
+      assert :total = Totality.check_totality(:f, type, body, @adts)
+    end
+  end
 end

@@ -1172,7 +1172,9 @@ defmodule Haruspex.Check do
     case type do
       {:vpi, :zero, dom, env, cod} ->
         lvl = Context.level(ctx.context)
-        {id, ms} = MetaState.fresh_meta(ctx.meta_state, dom, lvl, :implicit)
+        # Use :gadt kind — constructor implicit metas may go unsolved for
+        # unused params (e.g., n in vnil) and should not trigger errors.
+        {id, ms} = MetaState.fresh_meta(ctx.meta_state, dom, lvl, :gadt)
         meta_val = {:vneutral, dom, {:nmeta, id}}
         ctx = %{ctx | meta_state: ms}
         cod_val = Eval.eval(make_eval_ctx(ctx, [meta_val | env]), cod)

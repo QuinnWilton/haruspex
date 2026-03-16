@@ -466,4 +466,292 @@ defmodule Haruspex.TypeClassCodegenTest do
       assert is_tuple(ast)
     end
   end
+
+  # ============================================================================
+  # Bridge — compile_impl
+  # ============================================================================
+
+  describe "compile_impl" do
+    test "generates defimpl for a builtin type instance" do
+      class_decl = %{
+        name: :Eq,
+        params: [{:a, {:type, {:llit, 0}}}],
+        superclasses: [],
+        methods: [
+          {:eq, {:pi, :omega, {:var, 0}, {:pi, :omega, {:var, 1}, {:builtin, :Bool}}}}
+        ],
+        defaults: [],
+        dict_name: :EqDict,
+        dict_constructor_name: :mk_EqDict,
+        span: nil
+      }
+
+      instance_entry = %{
+        class_name: :Eq,
+        n_params: 0,
+        head: [{:builtin, :Int}],
+        constraints: [],
+        methods: [{:eq, {:lam, :omega, {:lam, :omega, {:var, 0}}}}],
+        span: nil,
+        module: nil
+      }
+
+      ast = Bridge.compile_impl(instance_entry, class_decl, TestImplMod)
+      assert ast != nil
+      code = Macro.to_string(ast)
+      assert code =~ "defimpl"
+      assert code =~ "TestImplMod.Eq"
+      assert code =~ "Integer"
+      assert code =~ "eq"
+    end
+
+    test "returns nil for unmappable type" do
+      class_decl = %{
+        name: :Eq,
+        params: [{:a, {:type, {:llit, 0}}}],
+        superclasses: [],
+        methods: [{:eq, {:pi, :omega, {:var, 0}, {:builtin, :Bool}}}],
+        defaults: [],
+        dict_name: :EqDict,
+        dict_constructor_name: :mk_EqDict,
+        span: nil
+      }
+
+      # A non-builtin head type that can't map to an Elixir type.
+      instance_entry = %{
+        class_name: :Eq,
+        n_params: 0,
+        head: [{:data, :MyCustom, []}],
+        constraints: [],
+        methods: [{:eq, {:lit, :placeholder}}],
+        span: nil,
+        module: nil
+      }
+
+      assert nil == Bridge.compile_impl(instance_entry, class_decl, TestImplMod)
+    end
+
+    test "returns nil for unknown builtin type" do
+      class_decl = %{
+        name: :Eq,
+        params: [{:a, {:type, {:llit, 0}}}],
+        superclasses: [],
+        methods: [{:eq, {:pi, :omega, {:var, 0}, {:builtin, :Bool}}}],
+        defaults: [],
+        dict_name: :EqDict,
+        dict_constructor_name: :mk_EqDict,
+        span: nil
+      }
+
+      instance_entry = %{
+        class_name: :Eq,
+        n_params: 0,
+        head: [{:builtin, :UnknownBuiltin}],
+        constraints: [],
+        methods: [{:eq, {:lit, :placeholder}}],
+        span: nil,
+        module: nil
+      }
+
+      assert nil == Bridge.compile_impl(instance_entry, class_decl, TestImplMod)
+    end
+  end
+
+  # ============================================================================
+  # Bridge — instance_to_elixir_type
+  # ============================================================================
+
+  describe "instance_to_elixir_type via compile_impl" do
+    test "maps builtin Int to Integer" do
+      class_decl = %{
+        name: :Show,
+        params: [{:a, {:type, {:llit, 0}}}],
+        superclasses: [],
+        methods: [{:show, {:pi, :omega, {:var, 0}, {:builtin, :String}}}],
+        defaults: [],
+        dict_name: :ShowDict,
+        dict_constructor_name: :mk_ShowDict,
+        span: nil
+      }
+
+      instance_entry = %{
+        class_name: :Show,
+        n_params: 0,
+        head: [{:builtin, :Float}],
+        constraints: [],
+        methods: [{:show, {:lam, :omega, {:lit, "float"}}}],
+        span: nil,
+        module: nil
+      }
+
+      ast = Bridge.compile_impl(instance_entry, class_decl, TestImplFloat)
+      assert ast != nil
+      code = Macro.to_string(ast)
+      assert code =~ "Float"
+    end
+  end
+
+  # ============================================================================
+  # Bridge — method_arity_from_body
+  # ============================================================================
+
+  describe "method_arity_from_body via compile_impl" do
+    test "counts nested lambdas in method body" do
+      class_decl = %{
+        name: :Eq,
+        params: [{:a, {:type, {:llit, 0}}}],
+        superclasses: [],
+        methods: [
+          {:eq, {:pi, :omega, {:var, 0}, {:pi, :omega, {:var, 1}, {:builtin, :Bool}}}}
+        ],
+        defaults: [],
+        dict_name: :EqDict,
+        dict_constructor_name: :mk_EqDict,
+        span: nil
+      }
+
+      # Body with two nested lambdas → arity 2.
+      instance_entry = %{
+        class_name: :Eq,
+        n_params: 0,
+        head: [{:builtin, :String}],
+        constraints: [],
+        methods: [{:eq, {:lam, :omega, {:lam, :omega, {:lit, true}}}}],
+        span: nil,
+        module: nil
+      }
+
+      ast = Bridge.compile_impl(instance_entry, class_decl, TestImplArity)
+      assert ast != nil
+      code = Macro.to_string(ast)
+      # Should generate def eq(arg0, arg1, arg2) — 1 dispatch + 2 lambda args.
+      assert code =~ "eq"
+    end
+
+    test "non-lambda body yields arity 0" do
+      class_decl = %{
+        name: :Show,
+        params: [{:a, {:type, {:llit, 0}}}],
+        superclasses: [],
+        methods: [{:show, {:pi, :omega, {:var, 0}, {:builtin, :String}}}],
+        defaults: [],
+        dict_name: :ShowDict,
+        dict_constructor_name: :mk_ShowDict,
+        span: nil
+      }
+
+      # Body is a literal, not a lambda → arity 0.
+      instance_entry = %{
+        class_name: :Show,
+        n_params: 0,
+        head: [{:builtin, :Bool}],
+        constraints: [],
+        methods: [{:show, {:lit, "true"}}],
+        span: nil,
+        module: nil
+      }
+
+      ast = Bridge.compile_impl(instance_entry, class_decl, TestImplZeroArity)
+      assert ast != nil
+      code = Macro.to_string(ast)
+      assert code =~ "show"
+    end
+  end
+
+  # ============================================================================
+  # Bridge — compile_bridges with protocol-annotated class
+  # ============================================================================
+
+  describe "compile_bridges with protocol-annotated class" do
+    test "generates protocol and impls for @protocol class" do
+      class_decl = %{
+        name: :Eq,
+        params: [{:a, {:type, {:llit, 0}}}],
+        superclasses: [],
+        methods: [
+          {:eq, {:pi, :omega, {:var, 0}, {:pi, :omega, {:var, 1}, {:builtin, :Bool}}}}
+        ],
+        defaults: [],
+        dict_name: :EqDict,
+        dict_constructor_name: :mk_EqDict,
+        span: nil,
+        protocol?: true
+      }
+
+      instance_entry = %{
+        class_name: :Eq,
+        n_params: 0,
+        head: [{:builtin, :Int}],
+        constraints: [],
+        methods: [{:eq, {:lam, :omega, {:lam, :omega, {:var, 0}}}}],
+        span: nil,
+        module: nil
+      }
+
+      classes = %{Eq: class_decl}
+      instances = %{Eq: [instance_entry]}
+
+      result = Bridge.compile_bridges(classes, instances, %{}, TestBridgeMod)
+      # Should have at least the protocol definition and one impl.
+      assert length(result) >= 2
+
+      code = Enum.map(result, &Macro.to_string/1) |> Enum.join("\n")
+      assert code =~ "defprotocol"
+      assert code =~ "defimpl"
+    end
+
+    test "multi-param class is skipped by compile_bridges" do
+      class_decl = %{
+        name: :MultiEq,
+        params: [{:a, {:type, {:llit, 0}}}, {:b, {:type, {:llit, 0}}}],
+        superclasses: [],
+        methods: [{:meq, {:pi, :omega, {:var, 0}, {:builtin, :Bool}}}],
+        defaults: [],
+        dict_name: :MultiEqDict,
+        dict_constructor_name: :mk_MultiEqDict,
+        span: nil,
+        protocol?: true
+      }
+
+      classes = %{MultiEq: class_decl}
+      result = Bridge.compile_bridges(classes, %{}, %{}, TestBridgeMod)
+      assert result == []
+    end
+
+    test "prelude instances are rejected from impl generation" do
+      class_decl = %{
+        name: :Eq,
+        params: [{:a, {:type, {:llit, 0}}}],
+        superclasses: [],
+        methods: [
+          {:eq, {:pi, :omega, {:var, 0}, {:pi, :omega, {:var, 1}, {:builtin, :Bool}}}}
+        ],
+        defaults: [],
+        dict_name: :EqDict,
+        dict_constructor_name: :mk_EqDict,
+        span: nil,
+        protocol?: true
+      }
+
+      # Instance with module: :prelude should be rejected.
+      prelude_instance = %{
+        class_name: :Eq,
+        n_params: 0,
+        head: [{:builtin, :Int}],
+        constraints: [],
+        methods: [{:eq, {:lam, :omega, {:lam, :omega, {:var, 0}}}}],
+        span: nil,
+        module: :prelude
+      }
+
+      classes = %{Eq: class_decl}
+      instances = %{Eq: [prelude_instance]}
+
+      result = Bridge.compile_bridges(classes, instances, %{}, TestBridgeMod)
+      # Only the protocol definition, no impls (prelude instance filtered out).
+      assert length(result) == 1
+      code = Macro.to_string(hd(result))
+      assert code =~ "defprotocol"
+    end
+  end
 end
