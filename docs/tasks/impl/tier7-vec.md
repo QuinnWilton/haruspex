@@ -58,9 +58,13 @@ These functions exercise the reduction gate:
 
 ### Prerequisites
 
-- GADT constructor return type elaboration (constructors with refined indices)
-- Dependent pattern matching that refines type indices in branches
-- `@total` `add` available for type-level reduction via `def_ref`
+The following infrastructure must be in place before Vec can work:
+
+1. **GADT constructor return type elaboration** — constructors with refined indices are elaborated (parsing and elaboration exist, but the checker doesn't yet unify constructor return types with scrutinee types during pattern matching)
+2. **Dependent pattern matching with index refinement** — case branches on a GADT scrutinee must unify the constructor's return type with the expected type, solving index variables in the branch. This is NOT currently implemented in `Check`. The current case checking handles plain ADTs but doesn't refine type parameters based on which constructor matched.
+3. **`@total` `add` available for type-level reduction via `def_ref`** — DONE (tier7-reduction-gate)
+
+Items 1-2 are significant type theory features (GADT checking). They may warrant their own task.
 
 ## Testing strategy
 
