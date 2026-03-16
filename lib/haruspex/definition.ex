@@ -14,6 +14,7 @@ defmodule Haruspex.Definition do
       :type,
       :body,
       :total?,
+      :fuel,
       :private?,
       :extern,
       :erased_params,

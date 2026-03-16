@@ -138,6 +138,58 @@ defmodule Haruspex.TotalityTest do
 
       assert :total = Totality.check_totality(:f, type, body, @adts)
     end
+
+    test "nested case: recursion on subterm of subterm" do
+      # def depth(xs : List(a)) : Nat do
+      #   case xs do
+      #     nil -> zero
+      #     cons(_, rest) ->
+      #       case rest do
+      #         nil -> succ(zero)
+      #         cons(_, rest2) -> succ(succ(depth(rest2)))
+      #       end
+      #   end
+      # end
+      #
+      # Under check_def: depth=var(0), lam(xs)
+      # In body: xs=var(0), depth=var(1)
+      # In outer cons branch (arity 2): _=var(1), rest=var(0), xs=var(2), depth=var(3)
+      # rest is a subterm of xs. Case on rest:
+      # In inner cons branch (arity 2): _=var(1), rest2=var(0), rest=var(2), ...depth=var(5)
+      # rest2 is a subterm of rest, which is a subterm of xs.
+      # Recursive call depth(rest2) = app(var(5), var(0))
+      # rest2 at var(0) IS a subterm (introduced by case on rest, which is itself
+      # a subterm tracked through the nested case on candidate param).
+      type = {:pi, :omega, {:data, :List, [{:var, 0}]}, {:data, :Nat, []}}
+
+      body =
+        {:lam, :omega,
+         {:case, {:var, 0},
+          [
+            {nil, 0, {:con, :Nat, :zero, []}},
+            {
+              :cons,
+              2,
+              # rest = var(0), case on rest
+              {:case, {:var, 0},
+               [
+                 {nil, 0, {:con, :Nat, :succ, [{:con, :Nat, :zero, []}]}},
+                 {
+                   :cons,
+                   2,
+                   # rest2 = var(0), depth = var(5)
+                   {:con, :Nat, :succ, [{:con, :Nat, :succ, [{:app, {:var, 5}, {:var, 0}}]}]}
+                 }
+               ]}
+            }
+          ]}}
+
+      # This should be accepted because rest2 is a structural subterm.
+      # The totality checker sees the outer case on xs (candidate param),
+      # then inside that branch, rest (var 0) is a subterm. The inner case
+      # is on rest, and rest2 (var 0 under inner branch) is also a subterm.
+      assert :total = Totality.check_totality(:depth, type, body, @adts)
+    end
   end
 
   # ============================================================================

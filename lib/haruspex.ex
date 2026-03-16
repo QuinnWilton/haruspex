@@ -248,13 +248,16 @@ defmodule Haruspex do
     {:ok, {adts, records, classes, instances}} =
       Roux.Runtime.query!(db, :haruspex_elaborate_types, uri)
 
+    total_defs = collect_total_defs(db, uri)
+
     ctx = %{
       Haruspex.Check.new()
       | db: db,
         adts: adts,
         records: records,
         classes: classes,
-        instances: instances
+        instances: instances,
+        total_defs: total_defs
     }
 
     # Check if this def belongs to a mutual group.
@@ -422,6 +425,7 @@ defmodule Haruspex do
             type: nil,
             body: nil,
             total?: Map.get(attrs, :total, false),
+            fuel: Map.get(attrs, :fuel),
             private?: Map.get(attrs, :private, false),
             extern: Map.get(attrs, :extern),
             erased_params: nil,
@@ -471,6 +475,7 @@ defmodule Haruspex do
                   type: nil,
                   body: nil,
                   total?: Map.get(attrs, :total, false),
+                  fuel: Map.get(attrs, :fuel),
                   private?: Map.get(attrs, :private, false),
                   extern: Map.get(attrs, :extern),
                   erased_params: nil,
@@ -516,6 +521,27 @@ defmodule Haruspex do
       :error ->
         []
     end
+  end
+
+  # Collect all @total definitions from a file for type-level reduction.
+  # Returns %{name => {body_core, true}} for each total def with an elaborated body.
+  defp collect_total_defs(db, uri) do
+    {:ok, entity_ids} = Roux.Runtime.query!(db, :haruspex_parse, uri)
+
+    Enum.reduce(entity_ids, %{}, fn entity_id, acc ->
+      total? = Roux.Runtime.field(db, Definition, entity_id, :total?) == true
+
+      if total? do
+        def_name = Roux.Runtime.field(db, Definition, entity_id, :name)
+
+        case Roux.Runtime.query(db, :haruspex_elaborate, {uri, def_name}) do
+          {:ok, {_type, body}} -> Map.put(acc, def_name, {body, true})
+          _ -> acc
+        end
+      else
+        acc
+      end
+    end)
   end
 
   defp def_total?(db, uri, name) do

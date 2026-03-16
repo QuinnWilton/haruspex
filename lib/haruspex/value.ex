@@ -39,6 +39,7 @@ defmodule Haruspex.Value do
           | {:nmeta, Core.meta_id()}
           | {:ndef, atom(), [value()]}
           | {:nbuiltin, atom()}
+          | {:ndef_ref, atom()}
           | {:ncase, neutral(), [{atom(), non_neg_integer(), Core.expr()}], env()}
 
   # ============================================================================

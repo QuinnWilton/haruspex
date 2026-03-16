@@ -187,4 +187,82 @@ defmodule Haruspex.ReductionGateTest do
       assert {:app, {:def_ref, :add}, {:var, 1}} = result
     end
   end
+
+  # ============================================================================
+  # Pipeline integration: total defs populated in checker
+  # ============================================================================
+
+  describe "pipeline: total defs in checker" do
+    test "@total definition body is available in eval context" do
+      db = Roux.Database.new()
+      Roux.Lang.register(db, Haruspex)
+
+      Roux.Input.set(db, :source_text, "lib/test.hx", """
+      type Nat = zero | succ(Nat)
+
+      @total
+      def add(n : Nat, m : Nat) : Nat do
+        case n do
+          zero -> m
+          succ(k) -> succ(add(k, m))
+        end
+      end
+
+      def identity(x : Int) : Int do x end
+      """)
+
+      {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/test.hx")
+
+      # Check identity (which triggers collect_total_defs).
+      {:ok, {_type, _body}} =
+        Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :identity})
+
+      # Check add too.
+      {:ok, {_type, _body}} =
+        Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :add})
+    end
+  end
+
+  # ============================================================================
+  # @fuel annotation
+  # ============================================================================
+
+  describe "@fuel annotation" do
+    test "parses @fuel N before def" do
+      {:ok, [form]} = Haruspex.Parser.parse("@fuel 5000\ndef f(x : Int) : Int do x end")
+      {:def, _, {:sig, _, :f, _, _, _, attrs}, _} = form
+      assert attrs.fuel == 5000
+    end
+
+    test "parses @total @fuel combination" do
+      {:ok, [form]} =
+        Haruspex.Parser.parse("@total\n@fuel 100\ndef f(x : Int) : Int do x end")
+
+      {:def, _, {:sig, _, :f, _, _, _, attrs}, _} = form
+      assert attrs.total == true
+      assert attrs.fuel == 100
+    end
+
+    test "fuel stored on Definition entity" do
+      db = Roux.Database.new()
+      Roux.Lang.register(db, Haruspex)
+
+      Roux.Input.set(db, :source_text, "lib/test.hx", """
+      @fuel 500
+      def f(x : Int) : Int do x end
+      """)
+
+      {:ok, [entity_id]} = Roux.Runtime.query(db, :haruspex_parse, "lib/test.hx")
+      assert 500 == Roux.Runtime.field(db, Haruspex.Definition, entity_id, :fuel)
+    end
+
+    test "no @fuel defaults to nil" do
+      db = Roux.Database.new()
+      Roux.Lang.register(db, Haruspex)
+
+      Roux.Input.set(db, :source_text, "lib/test.hx", "def f(x : Int) : Int do x end")
+      {:ok, [entity_id]} = Roux.Runtime.query(db, :haruspex_parse, "lib/test.hx")
+      assert nil == Roux.Runtime.field(db, Haruspex.Definition, entity_id, :fuel)
+    end
+  end
 end

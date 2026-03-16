@@ -48,7 +48,8 @@ defmodule Haruspex.Check do
     records: %{},
     classes: %{},
     instances: %{},
-    class_param_metas: %{}
+    class_param_metas: %{},
+    total_defs: %{}
   ]
 
   @type t :: %__MODULE__{
@@ -61,7 +62,8 @@ defmodule Haruspex.Check do
           records: %{atom() => Haruspex.Record.record_decl()},
           classes: %{atom() => Haruspex.TypeClass.class_decl()},
           instances: Haruspex.TypeClass.Search.instance_db(),
-          class_param_metas: %{non_neg_integer() => atom()}
+          class_param_metas: %{non_neg_integer() => atom()},
+          total_defs: %{atom() => {Haruspex.Core.expr(), boolean()}}
         }
 
   # ============================================================================
@@ -987,7 +989,7 @@ defmodule Haruspex.Check do
       |> Enum.filter(fn {_, entry} -> match?({:solved, _}, entry) end)
       |> Map.new(fn {id, {:solved, val}} -> {id, {:solved, val}} end)
 
-    %{env: env, metas: solved, defs: %{}, fuel: 1000}
+    %{env: env, metas: solved, defs: ctx.total_defs, fuel: 1000}
   end
 
   defp pick_binder_name(ctx) do

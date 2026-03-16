@@ -144,6 +144,23 @@ defmodule Haruspex.Totality do
         # Case on the candidate parameter — branches bind subterms.
         check_case_branches(branches, self_ix, param_ix, param_pos, depth)
 
+      {:case, {:var, scrutinee_ix} = scrutinee, branches} ->
+        # If the scrutinee is a known subterm, branch variables are also subterms.
+        if MapSet.member?(subterms, scrutinee_ix) do
+          check_case_branches_with_existing(
+            branches,
+            self_ix,
+            param_ix,
+            param_pos,
+            depth,
+            subterms
+          )
+        else
+          with :ok <- do_check(scrutinee, self_ix, param_ix, param_pos, depth, subterms) do
+            check_branches(branches, self_ix, param_ix, param_pos, depth, subterms)
+          end
+        end
+
       {:case, scrutinee, branches} ->
         # Case on something else — check scrutinee and branches.
         with :ok <- do_check(scrutinee, self_ix, param_ix, param_pos, depth, subterms) do
@@ -268,6 +285,36 @@ defmodule Haruspex.Totality do
         subterms = if arity > 0, do: MapSet.new(0..(arity - 1)), else: MapSet.new()
 
         case do_check(body, self_ix, param_ix, param_pos, depth + arity, subterms) do
+          :ok -> {:cont, :ok}
+          err -> {:halt, err}
+        end
+    end)
+  end
+
+  # Check branches of a case on a known subterm — transitive subterm tracking.
+  # Both the existing subterms AND new pattern variables are subterms.
+  defp check_case_branches_with_existing(branches, self_ix, param_ix, param_pos, depth, existing) do
+    Enum.reduce_while(branches, :ok, fn
+      {:__lit, _value, body}, :ok ->
+        shifted = shift_subterms(existing, 0)
+
+        case do_check(body, self_ix, param_ix, param_pos, depth, shifted) do
+          :ok -> {:cont, :ok}
+          err -> {:halt, err}
+        end
+
+      {_con_or_wildcard, arity, body}, :ok ->
+        # Shift existing subterms up by arity, then add new pattern vars 0..arity-1.
+        shifted = shift_subterms(existing, arity)
+
+        new_subterms =
+          if arity > 0 do
+            Enum.reduce(0..(arity - 1), shifted, &MapSet.put(&2, &1))
+          else
+            shifted
+          end
+
+        case do_check(body, self_ix, param_ix, param_pos, depth + arity, new_subterms) do
           :ok -> {:cont, :ok}
           err -> {:halt, err}
         end

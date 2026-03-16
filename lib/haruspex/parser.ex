@@ -285,7 +285,10 @@ defmodule Haruspex.Parser do
     end
   end
 
-  defp parse_annotations(state, attrs \\ %{total: false, private: false, extern: nil}) do
+  defp parse_annotations(
+         state,
+         attrs \\ %{total: false, private: false, extern: nil, fuel: nil}
+       ) do
     case peek(state) do
       {:at, _, _} ->
         state = advance(state)
@@ -294,6 +297,17 @@ defmodule Haruspex.Parser do
         cond do
           tag == :ident and val == :total ->
             parse_annotations(skip_newlines(advance(state)), %{attrs | total: true})
+
+          tag == :ident and val == :fuel ->
+            state = advance(state)
+
+            case peek(state) do
+              {:int, _, n} ->
+                parse_annotations(skip_newlines(advance(state)), %{attrs | fuel: n})
+
+              {_, fspan, _} ->
+                {:error, "expected integer after @fuel", fspan}
+            end
 
           tag == :ident and val == :private ->
             parse_annotations(skip_newlines(advance(state)), %{attrs | private: true})
@@ -306,7 +320,7 @@ defmodule Haruspex.Parser do
             end
 
           true ->
-            {:error, "expected total, private, or extern after @", span}
+            {:error, "expected total, private, fuel, or extern after @", span}
         end
 
       _ ->
