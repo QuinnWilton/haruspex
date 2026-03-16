@@ -45,6 +45,7 @@ defmodule Haruspex.Core do
           | {:con, atom(), atom(), [expr()]}
           | {:case, expr(), [{atom(), non_neg_integer(), expr()}]}
           | {:record_proj, atom(), expr()}
+          | {:def_ref, atom()}
           | :erased
 
   # ============================================================================
@@ -159,6 +160,7 @@ defmodule Haruspex.Core do
   end
 
   def subst(:erased, _target, _replacement), do: :erased
+  def subst({:def_ref, name}, _target, _replacement), do: {:def_ref, name}
 
   def subst({:data, name, args}, target, replacement) do
     {:data, name, Enum.map(args, &subst(&1, target, replacement))}
@@ -244,6 +246,7 @@ defmodule Haruspex.Core do
   end
 
   def shift(:erased, _amount, _cutoff), do: :erased
+  def shift({:def_ref, name}, _amount, _cutoff), do: {:def_ref, name}
 
   def shift({:data, name, args}, amount, cutoff) do
     {:data, name, Enum.map(args, &shift(&1, amount, cutoff))}

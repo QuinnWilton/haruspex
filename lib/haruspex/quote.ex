@@ -237,6 +237,10 @@ defmodule Haruspex.Quote do
     {:builtin, name}
   end
 
+  defp quote_neutral(_lvl, {:ndef_ref, name}) do
+    {:def_ref, name}
+  end
+
   defp quote_neutral(lvl, {:ncase, ne, branches, _env}) do
     {:case, quote_neutral(lvl, ne),
      Enum.map(branches, fn

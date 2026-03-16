@@ -207,6 +207,7 @@ defmodule Haruspex.Unify do
       {:nsnd, head} -> occurs_in_neutral?(ms, meta_id, head)
       {:ndef, _, args} -> Enum.any?(args, &occurs_in?(ms, meta_id, &1))
       {:nbuiltin, _} -> false
+      {:ndef_ref, _} -> false
       {:ncase, head, _branches, _env} -> occurs_in_neutral?(ms, meta_id, head)
     end
   end
@@ -287,6 +288,9 @@ defmodule Haruspex.Unify do
         Enum.all?(args, &scope_ok?(&1, allowed_levels))
 
       {:nbuiltin, _} ->
+        true
+
+      {:ndef_ref, _} ->
         true
 
       {:ncase, head, _branches, _env} ->
@@ -393,6 +397,8 @@ defmodule Haruspex.Unify do
   defp rename_vars({:record_proj, field, expr}, rename_map, depth) do
     {:record_proj, field, rename_vars(expr, rename_map, depth)}
   end
+
+  defp rename_vars({:def_ref, name}, _rename_map, _depth), do: {:def_ref, name}
 
   defp rename_vars({:case, scrutinee, branches}, rename_map, depth) do
     {:case, rename_vars(scrutinee, rename_map, depth),
@@ -562,6 +568,10 @@ defmodule Haruspex.Unify do
 
   defp unify_neutral(ms, _lvl, {:nbuiltin, n1}, {:nbuiltin, n2}) do
     if n1 == n2, do: {:ok, ms}, else: {:error, {:mismatch, {:nbuiltin, n1}, {:nbuiltin, n2}}}
+  end
+
+  defp unify_neutral(ms, _lvl, {:ndef_ref, n1}, {:ndef_ref, n2}) do
+    if n1 == n2, do: {:ok, ms}, else: {:error, {:mismatch, {:ndef_ref, n1}, {:ndef_ref, n2}}}
   end
 
   defp unify_neutral(ms, lvl, {:ndef, name1, args1}, {:ndef, name2, args2}) do

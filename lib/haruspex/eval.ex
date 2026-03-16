@@ -99,6 +99,23 @@ defmodule Haruspex.Eval do
     {:vglobal, mod, name, arity}
   end
 
+  # Definition reference: look up in defs map and unfold if total + fuel > 0.
+  def eval(ctx, {:def_ref, name}) do
+    case Map.get(ctx.defs, name) do
+      {body, true} when ctx.fuel > 0 ->
+        # Total definition with fuel — unfold.
+        eval(%{ctx | fuel: ctx.fuel - 1}, body)
+
+      {_body, _total?} ->
+        # No fuel or non-total — stuck neutral.
+        {:vneutral, {:vtype, {:llit, 0}}, {:ndef_ref, name}}
+
+      nil ->
+        # Unknown definition — stuck neutral.
+        {:vneutral, {:vtype, {:llit, 0}}, {:ndef_ref, name}}
+    end
+  end
+
   def eval(ctx, {:meta, id}) do
     case Map.get(ctx.metas, id) do
       {:solved, val} -> val
