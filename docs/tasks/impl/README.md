@@ -29,12 +29,9 @@ Tiers 0–6 are complete. Task files are in [`done/`](done/).
 - **Tier 4**: Module system (modules, prelude)
 - **Tier 5**: ADTs + records (ADTs, pattern matching, records, with-abstraction, subsystem gaps)
 - **Tier 6**: Type classes (classes, instances, codegen, arithmetic overload, checker instance search, builtin operator removal, subsystem gaps)
+- **Tier 7**: Totality (@total structural recursion, reduction gate)
 
 ## Remaining tiers
-
-### Tier 7: Totality
-- [[tier7-totality]] — @total structural recursion checking
-- [[tier7-reduction-gate]] — totality gates type-level reduction
 
 ### Tier 8: Refinements
 - [[tier8-refinements]] — refinement types, predicate language, constrain
