@@ -333,7 +333,7 @@ defmodule Haruspex.ParserTest do
     test "lambda with implicit param" do
       expr = parse_expr!("fn({a : Type}) -> a end")
       assert {:fn, _, [param], {:var, _, :a}} = expr
-      assert {:param, _, {:a, :omega, true}, {:type_universe, _, nil}} = param
+      assert {:param, _, {:a, :zero, true}, {:type_universe, _, nil}} = param
     end
 
     test "lambda with wildcard param" do
@@ -465,7 +465,7 @@ defmodule Haruspex.ParserTest do
       [decl] = parse!("def id({a : Type}, x : a) : a do x end")
       assert {:def, _, sig, _} = decl
       assert {:sig, _, :id, _, [implicit_param, explicit_param], _, _} = sig
-      assert {:param, _, {:a, :omega, true}, {:type_universe, _, nil}} = implicit_param
+      assert {:param, _, {:a, :zero, true}, {:type_universe, _, nil}} = implicit_param
       assert {:param, _, {:x, :omega, false}, {:var, _, :a}} = explicit_param
     end
 
@@ -549,7 +549,7 @@ defmodule Haruspex.ParserTest do
     test "simple implicit declaration" do
       [decl] = parse!("@implicit {a : Type}")
       assert {:implicit_decl, _, [param]} = decl
-      assert {:param, _, {:a, :omega, true}, {:type_universe, _, nil}} = param
+      assert {:param, _, {:a, :zero, true}, {:type_universe, _, nil}} = param
     end
   end
 
@@ -1147,7 +1147,7 @@ defmodule Haruspex.ParserTest do
         end)
 
       assert {:def, _, {:sig, _, :vtail, _, params, _, _}, _} = vtail
-      assert [{:param, _, {:a, :omega, true}, _}, {:param, _, {:n, :zero, false}, _} | _] = params
+      assert [{:param, _, {:a, :zero, true}, _}, {:param, _, {:n, :zero, false}, _} | _] = params
     end
   end
 
@@ -1209,7 +1209,7 @@ defmodule Haruspex.ParserTest do
     test "implicit declaration" do
       {:ok, [var_decl | _]} = Parser.parse(fixture("refinement.hx"))
       assert {:implicit_decl, _, [param]} = var_decl
-      assert {:param, _, {:a, :omega, true}, {:type_universe, _, nil}} = param
+      assert {:param, _, {:a, :zero, true}, {:type_universe, _, nil}} = param
     end
 
     test "@extern annotation" do

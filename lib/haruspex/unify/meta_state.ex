@@ -18,7 +18,7 @@ defmodule Haruspex.Unify.MetaState do
 
   @type meta_entry ::
           {:unsolved, type :: Value.value(), ctx_level :: non_neg_integer(),
-           kind :: :implicit | :hole}
+           kind :: :implicit | :hole | :gadt}
           | {:solved, Value.value()}
 
   @type t :: %__MODULE__{
@@ -52,7 +52,7 @@ defmodule Haruspex.Unify.MetaState do
 
   Returns the new meta ID and the updated state.
   """
-  @spec fresh_meta(t(), Value.value(), non_neg_integer(), :implicit | :hole) ::
+  @spec fresh_meta(t(), Value.value(), non_neg_integer(), :implicit | :hole | :gadt) ::
           {Core.meta_id(), t()}
   def fresh_meta(%__MODULE__{} = state, type, level, kind) do
     id = state.next_id

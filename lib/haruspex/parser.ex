@@ -498,10 +498,12 @@ defmodule Haruspex.Parser do
   defp parse_param(state) do
     case peek(state) do
       # Implicit: {name : type} or {0 name : type}
+      # Default multiplicity is :zero (erased at runtime).
       {:lbrace, _, _} ->
         start_span = span_of(state)
         state = advance(state)
         {mult, state} = parse_optional_mult(state)
+        mult = if mult == :omega, do: :zero, else: mult
 
         with {:ok, name, _name_span, state} <- expect_ident_or_wildcard(state),
              {:ok, state} <- expect(state, :colon),

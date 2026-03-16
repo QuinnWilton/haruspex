@@ -1,0 +1,175 @@
+<!-- playbill:{"version":"0.1.0"} -->
+
+# Tier 7: GADTs and Length-Indexed Vectors
+
+## Section
+
+```elixir
+Mix.install([
+  {:haruspex, path: "/Users/quinn/dev/beam_box/haruspex"},
+  {:roux, path: "/Users/quinn/dev/beam_box/roux"},
+  {:pentiment, path: "/Users/quinn/dev/beam_box/pentiment"},
+  {:constrain, path: "/Users/quinn/dev/beam_box/constrain"},
+  {:quail, path: "/Users/quinn/dev/beam_box/quail"}
+])
+```
+
+Tier 7 adds **GADT checking** and **dependent pattern matching** to the bidirectional type checker. When pattern matching on a GADT, the checker unifies each constructor's return type with the scrutinee type, solving index variables and refining field types per branch. Impossible branches are detected and excluded from exhaustiveness.
+
+This enables **length-indexed vectors** (`Vec(a, n)`) with compile-time length tracking — including a fully general `vappend` whose return type `Vec(a, add(n, m))` requires type-level computation via `@total add`.
+
+## Setup
+
+```elixir
+defmodule D do
+  alias Haruspex.{Check, Context, Eval, Pattern, Unify.MetaState}
+
+  def nat_decl do
+    %{
+      name: :Nat, params: [],
+      constructors: [
+        %{name: :zero, fields: [], return_type: {:data, :Nat, []}, span: nil},
+        %{name: :succ, fields: [{:data, :Nat, []}], return_type: {:data, :Nat, []}, span: nil}
+      ],
+      universe_level: {:llit, 0}, span: nil
+    }
+  end
+
+  def vec_decl do
+    %{
+      name: :Vec,
+      params: [{:a, {:type, {:llit, 0}}}, {:n, {:data, :Nat, []}}],
+      constructors: [
+        %{name: :vnil, fields: [],
+          return_type: {:data, :Vec, [{:var, 1}, {:con, :Nat, :zero, []}]}, span: nil},
+        %{name: :vcons, fields: [{:var, 1}, {:data, :Vec, [{:var, 1}, {:var, 0}]}],
+          return_type: {:data, :Vec, [{:var, 1}, {:con, :Nat, :succ, [{:var, 0}]}]}, span: nil}
+      ],
+      universe_level: {:llit, 0}, span: nil
+    }
+  end
+
+  def adts, do: %{Nat: nat_decl(), Vec: vec_decl()}
+  def vzero, do: {:vcon, :Nat, :zero, []}
+  def vsucc(n), do: {:vcon, :Nat, :succ, [n]}
+  def vec_type(a, n), do: {:vdata, :Vec, [a, n]}
+  def ctx, do: %{Check.new() | adts: adts()}
+
+  def extend(ctx, name, type) do
+    %{ctx | context: Context.extend(ctx.context, name, type, :omega), names: ctx.names ++ [name]}
+  end
+
+  def new_db do
+    db = Roux.Database.new()
+    Roux.Lang.register(db, Haruspex)
+    db
+  end
+
+  def purge(mod), do: :code.purge(mod) && :code.delete(mod)
+
+  defdelegate synth(ctx, term), to: Check
+  defdelegate check_exhaustiveness(adts, st, br, ms, l), to: Pattern
+  def default_ctx, do: Eval.default_ctx()
+  def new_ms, do: MetaState.new()
+end
+
+:ok
+```
+
+## GADT branch refinement
+
+Matching `vcons(x, rest)` against `Vec(Int, succ(zero))` solves `a → Int`, `n → zero`, giving `x : Int` and `rest : Vec(Int, zero)`:
+
+```elixir
+ctx = D.ctx() |> D.extend(:v, D.vec_type({:vbuiltin, :Int}, D.vsucc(D.vzero())))
+
+{:ok, _, head_type, _} = D.synth(ctx, {:case, {:var, 0}, [{:vcons, 2, {:var, 1}}]})
+IO.puts("vhead type: #{inspect(head_type)}")
+
+{:ok, _, tail_type, _} = D.synth(ctx, {:case, {:var, 0}, [{:vcons, 2, {:var, 0}}]})
+IO.puts("vtail type: #{inspect(tail_type)}")
+```
+
+## GADT-aware exhaustiveness
+
+`vnil` is impossible when the index is `succ(n)`, and `vcons` is impossible when it's `zero`. The exhaustiveness checker filters accordingly:
+
+```elixir
+ms = D.new_ms()
+adts = D.adts()
+
+IO.puts("Vec(_, succ(_)):")
+IO.inspect(D.check_exhaustiveness(adts, D.vec_type({:vbuiltin, :Int}, D.vsucc(D.vzero())), [{:vcons, 2, nil}], ms, 0), label: "  vcons only")
+IO.inspect(D.check_exhaustiveness(adts, D.vec_type({:vbuiltin, :Int}, D.vsucc(D.vzero())), [{:vnil, 0, nil}], ms, 0), label: "  vnil only")
+
+IO.puts("\nVec(_, zero):")
+IO.inspect(D.check_exhaustiveness(adts, D.vec_type({:vbuiltin, :Int}, D.vzero()), [{:vnil, 0, nil}], ms, 0), label: "  vnil only")
+IO.inspect(D.check_exhaustiveness(adts, D.vec_type({:vbuiltin, :Int}, D.vzero()), [{:vcons, 2, nil}], ms, 0), label: "  vcons only")
+:ok
+```
+
+## Full pipeline: general vappend
+
+The payoff: a fully general `@total vappend` with return type `Vec(Int, add(n, m))`. This exercises every piece of the GADT machinery:
+
+* **Implicit insertion** — the checker auto-inserts type params for constructor calls in bodies
+* **Index relaxation** — neutral type indices become fresh metas so GADT unification can learn equations like `n = zero` or `n = succ(k)`
+* **Branch expected types** — `apply_index_equations` substitutes learned equalities into the expected type, reducing `add(succ(k), m)` to `succ(add(k, m))`
+* **Type-level computation** — `@total add` unfolds during type checking so `add(succ(k), m)` steps to `succ(add(k, m))`
+* **Stuck case unification** — two `add(k, m)` expressions stuck on the same unsolved `k` are recognized as definitionally equal
+
+```elixir
+db = D.new_db()
+
+Roux.Input.set(db, :source_text, "lib/vec.hx", """
+type Nat = zero
+         | succ(Nat)
+
+type Vec(a : Type, n : Nat)
+  = vnil : Vec(a, zero)
+  | vcons(a, Vec(a, n)) : Vec(a, succ(n))
+
+@total
+def add(n : Nat, m : Nat) : Nat do
+  case n do
+    zero -> m
+    succ(k) -> succ(add(k, m))
+  end
+end
+
+@total
+def vappend(
+  {n : Nat},
+  {m : Nat},
+  xs : Vec(Int, n),
+  ys : Vec(Int, m)
+) : Vec(Int, add(n, m)) do
+  case xs do
+    vnil -> ys
+    vcons(x, rest) -> vcons(x, vappend(rest, ys))
+  end
+end
+""")
+
+{:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, "lib/vec.hx")
+
+v1 = mod.vcons(1, mod.vcons(2, mod.vnil()))
+v2 = mod.vcons(3, mod.vnil())
+appended = mod.vappend(v1, v2)
+
+IO.puts("vappend([1, 2], [3]) = #{inspect(appended)}")
+
+D.purge(mod)
+
+:ok
+```
+
+## Summary
+
+| Feature             | Result                                                                    |
+| ------------------- | ------------------------------------------------------------------------- |
+| Branch refinement   | `vcons` against `Vec(Int, succ(zero))` → fields `Int`, `Vec(Int, zero)` |
+| Impossible branches | `vnil` against `Vec(a, succ(n))` → impossible                           |
+| GADT exhaustiveness | Only `vcons` required for `Vec(a, succ(n))`                               |
+| General `vappend`   | `Vec(Int, add(n, m))` return type checks with `@total add` reduction      |
+| Runtime             | `vappend([1,2], [3])` compiles to BEAM and returns `[1, 2, 3]`            |

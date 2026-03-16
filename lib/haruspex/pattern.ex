@@ -11,8 +11,10 @@ defmodule Haruspex.Pattern do
   in the goal type with a fresh variable, producing a motive function.
   """
 
+  alias Haruspex.Eval
   alias Haruspex.Quote
   alias Haruspex.Unify
+  alias Haruspex.Unify.MetaState
   alias Haruspex.Value
 
   # ============================================================================
@@ -30,9 +32,22 @@ defmodule Haruspex.Pattern do
   """
   @spec check_exhaustiveness(map(), Value.value(), list()) :: exhaustiveness_result()
   def check_exhaustiveness(adts, scrut_type, branches) do
+    check_exhaustiveness(adts, scrut_type, branches, MetaState.new(), 0)
+  end
+
+  @doc """
+  GADT-aware exhaustiveness checking.
+
+  Filters the constructor set to only those whose return types are compatible
+  with the scrutinee type. Impossible constructors (those whose return types
+  cannot unify with the scrutinee) are excluded from the required set.
+  """
+  @spec check_exhaustiveness(map(), Value.value(), list(), MetaState.t(), non_neg_integer()) ::
+          exhaustiveness_result()
+  def check_exhaustiveness(adts, scrut_type, branches, meta_state, lvl) do
     case scrut_type do
       {:vdata, type_name, _type_args} ->
-        check_adt_exhaustiveness(adts, type_name, branches)
+        check_adt_exhaustiveness(adts, type_name, scrut_type, branches, meta_state, lvl)
 
       _ ->
         # Non-ADT: warn if literal patterns exist without a wildcard.
@@ -48,13 +63,18 @@ defmodule Haruspex.Pattern do
   # Internal
   # ============================================================================
 
-  defp check_adt_exhaustiveness(adts, type_name, branches) do
+  defp check_adt_exhaustiveness(adts, type_name, scrut_type, branches, meta_state, lvl) do
     case Map.fetch(adts, type_name) do
       {:ok, decl} ->
         if has_wildcard?(branches) do
           :ok
         else
-          con_names = MapSet.new(decl.constructors, & &1.name)
+          # Filter to only constructors whose return types are compatible
+          # with the scrutinee type (GADT-aware).
+          possible_cons =
+            decl.constructors
+            |> Enum.filter(&constructor_possible?(&1, decl, scrut_type, meta_state, lvl))
+            |> MapSet.new(& &1.name)
 
           covered =
             branches
@@ -64,7 +84,7 @@ defmodule Haruspex.Pattern do
               {name, _, _}, acc -> MapSet.put(acc, name)
             end)
 
-          missing = MapSet.difference(con_names, covered) |> MapSet.to_list()
+          missing = MapSet.difference(possible_cons, covered) |> MapSet.to_list()
 
           if missing == [] do
             :ok
@@ -90,6 +110,51 @@ defmodule Haruspex.Pattern do
       {:__lit, _, _} -> true
       _ -> false
     end)
+  end
+
+  # ============================================================================
+  # GADT constructor possibility check
+  # ============================================================================
+
+  # Check whether a constructor's return type can unify with the scrutinee type.
+  # Creates temporary metas for type params, evaluates the return type, and
+  # tries unification. If unification fails, the constructor is impossible
+  # for this scrutinee and can be excluded from the required set.
+  defp constructor_possible?(con, decl, scrut_type, meta_state, lvl) do
+    # Create fresh metas for each type parameter, evaluating kinds incrementally.
+    {meta_vals, temp_ms} =
+      Enum.reduce(decl.params, {[], meta_state}, fn {_name, kind_core}, {acc, ms} ->
+        param_env = Enum.reverse(acc)
+        eval_ctx = %{env: param_env, metas: solved_metas(ms), defs: %{}, fuel: 1000}
+        kind_val = Eval.eval(eval_ctx, kind_core)
+
+        {id, ms} = MetaState.fresh_meta(ms, kind_val, lvl, :gadt)
+        meta_val = {:vneutral, kind_val, {:nmeta, id}}
+
+        {acc ++ [meta_val], ms}
+      end)
+
+    param_env = Enum.reverse(meta_vals)
+
+    # Compute return type (use default if not a GADT constructor).
+    return_type_core = con.return_type || default_con_return_type(decl)
+
+    eval_ctx = %{env: param_env, metas: solved_metas(temp_ms), defs: %{}, fuel: 1000}
+    return_type_val = Eval.eval(eval_ctx, return_type_core)
+
+    match?({:ok, _}, Unify.unify(temp_ms, lvl, return_type_val, scrut_type))
+  end
+
+  defp default_con_return_type(decl) do
+    n_params = length(decl.params)
+    args = Enum.map((n_params - 1)..0//-1, fn i -> {:var, i} end)
+    {:data, decl.name, args}
+  end
+
+  defp solved_metas(ms) do
+    ms.entries
+    |> Enum.filter(fn {_, entry} -> match?({:solved, _}, entry) end)
+    |> Map.new(fn {id, {:solved, val}} -> {id, {:solved, val}} end)
   end
 
   # ============================================================================

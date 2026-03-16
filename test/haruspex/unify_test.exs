@@ -1708,7 +1708,9 @@ defmodule Haruspex.UnifyTest do
 
       # Build a neutral case with a __lit branch.
       # The __lit body contains a var that will be renamed.
-      ncase_ne = {:ncase, {:nvar, 0}, [{:__lit, true, {:var, 0}}], []}
+      # The env must contain the value for var(0) since quote_neutral
+      # evaluates branch bodies under the captured env.
+      ncase_ne = {:ncase, {:nvar, 0}, [{:__lit, true, {:var, 0}}], [x]}
       rhs = {:vneutral, int, ncase_ne}
 
       assert {:ok, ms} = Unify.unify(ms, 1, flex, rhs)

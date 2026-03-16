@@ -159,15 +159,23 @@ defmodule Haruspex.Check do
   end
 
   # Application: synth function, expect Pi, check argument.
+  # Inserts fresh metas for leading zero-multiplicity (implicit) Pi binders
+  # so that explicit arguments align with explicit Pi parameters.
   def synth(ctx, {:app, f, a}) do
     with {:ok, f_term, f_type, ctx} <- synth(ctx, f) do
       f_type = MetaState.force(ctx.meta_state, f_type)
+
+      # Peel implicit Pi's, wrapping f_term in applications to the inserted metas.
+      {f_type, f_term, ctx} = peel_implicit_apps(ctx, f_type, f_term)
 
       case f_type do
         {:vpi, _mult, dom, env, cod} ->
           with {:ok, a_term, ctx} <- check(ctx, a, dom) do
             a_val = eval_in(ctx, a_term)
-            cod_val = Eval.eval(make_eval_ctx(ctx, [a_val | env]), cod)
+            # Force env values — metas solved during arg checking may be
+            # stale neutrals in the closure-captured env.
+            forced_env = Enum.map(env, &MetaState.force(ctx.meta_state, &1))
+            cod_val = Eval.eval(make_eval_ctx(ctx, [a_val | forced_env]), cod)
             {:ok, {:app, f_term, a_term}, cod_val, ctx}
           end
 
@@ -237,19 +245,33 @@ defmodule Haruspex.Check do
         con_type_core = Haruspex.ADT.constructor_type(decl, con_name)
         con_type_val = eval_in(ctx, con_type_core)
 
-        # Apply the constructor type to all args (both implicit and explicit).
-        # For now, we only have explicit args — implicit param insertion will
-        # be handled by the full elaboration pipeline.
+        # Insert fresh metas for zero-multiplicity (implicit) params when
+        # only explicit field args are provided (elaboration doesn't insert
+        # implicits). Skip if args already include the implicit params.
+        con = Enum.find(decl.constructors, &(&1.name == con_name))
+        n_fields = if con, do: length(con.fields), else: length(args)
+
+        {con_type_val, _implicit_args, ctx} =
+          if length(args) <= n_fields do
+            peel_implicit_pis(ctx, con_type_val)
+          else
+            {con_type_val, [], ctx}
+          end
+
         {checked_args, result_type, ctx} =
           Enum.reduce(args, {[], con_type_val, ctx}, fn arg, {acc, fun_type, ctx} ->
             fun_type = MetaState.force(ctx.meta_state, fun_type)
 
             case fun_type do
               {:vpi, _mult, dom, env, cod} ->
+                # Force domain and env — metas solved by earlier args may be stale.
+                dom = MetaState.force(ctx.meta_state, dom)
+
                 case check(ctx, arg, dom) do
                   {:ok, arg_term, ctx} ->
                     arg_val = eval_in(ctx, arg_term)
-                    cod_val = Eval.eval(make_eval_ctx(ctx, [arg_val | env]), cod)
+                    forced_env = Enum.map(env, &MetaState.force(ctx.meta_state, &1))
+                    cod_val = Eval.eval(make_eval_ctx(ctx, [arg_val | forced_env]), cod)
                     {[arg_term | acc], cod_val, ctx}
                 end
 
@@ -261,6 +283,8 @@ defmodule Haruspex.Check do
             end
           end)
 
+        # Output only the original args (excluding inserted implicit metas)
+        # since implicit type params are erased at runtime.
         {:ok, {:con, type_name, con_name, Enum.reverse(checked_args)}, result_type, ctx}
 
       :error ->
@@ -300,7 +324,7 @@ defmodule Haruspex.Check do
       # Type check each branch with refined field types.
       {checked_branches, result_type, ctx} =
         Enum.reduce(branches, {[], nil, ctx}, fn branch, {acc, ret_type, ctx} ->
-          {inner_ctx, branch_head} =
+          {inner_ctx, branch_head, _index_equations} =
             extend_branch_ctx(ctx, forced_scrut_type, branch)
 
           body = elem(branch, tuple_size(branch) - 1)
@@ -321,8 +345,15 @@ defmodule Haruspex.Check do
           end
         end)
 
-      # Exhaustiveness checking (warnings only).
-      _exhaust = Haruspex.Pattern.check_exhaustiveness(ctx.adts, forced_scrut_type, branches)
+      # Exhaustiveness checking (warnings only, GADT-aware).
+      _exhaust =
+        Haruspex.Pattern.check_exhaustiveness(
+          ctx.adts,
+          forced_scrut_type,
+          branches,
+          ctx.meta_state,
+          Context.level(ctx.context)
+        )
 
       result_type = result_type || {:vtype, {:llit, 0}}
       {:ok, {:case, scrut_term, Enum.reverse(checked_branches)}, result_type, ctx}
@@ -496,16 +527,23 @@ defmodule Haruspex.Check do
       {:ok, motive_core} =
         Haruspex.Pattern.abstract_over(scrut_val, expected, ctx.meta_state, lvl)
 
-      # Type check each branch with the motive applied to the branch constructor.
+      # Type check each branch with refined expected types.
       {checked_branches, ctx} =
         Enum.reduce(branches, {[], ctx}, fn branch, {acc, ctx} ->
-          {inner_ctx, branch_head} =
+          {inner_ctx, branch_head, index_equations} =
             extend_branch_ctx(ctx, forced_scrut_type, branch)
 
-          # Compute the branch-specific expected type by evaluating the motive
-          # with the branch's constructor value. For non-dependent cases (motive
-          # doesn't use var 0), this just returns the original expected type.
-          branch_expected = eval_motive(ctx, motive_core, branch, scrut_val)
+          # Compute the branch-specific expected type. For GADT branches with
+          # index equations (e.g., n = zero in vnil), substitute the learned
+          # equalities into the expected type so type-level functions reduce.
+          # For non-GADT branches, use the standard motive evaluation.
+          branch_expected =
+            if index_equations != [] do
+              # Use inner_ctx which has GADT metas in its meta_state.
+              apply_index_equations(inner_ctx, expected, index_equations)
+            else
+              eval_motive(ctx, motive_core, branch, scrut_val)
+            end
 
           body = elem(branch, tuple_size(branch) - 1)
 
@@ -517,9 +555,15 @@ defmodule Haruspex.Check do
           end
         end)
 
-      # Exhaustiveness checking (warnings only).
+      # Exhaustiveness checking (warnings only, GADT-aware).
       _exhaust =
-        Haruspex.Pattern.check_exhaustiveness(ctx.adts, forced_scrut_type, branches)
+        Haruspex.Pattern.check_exhaustiveness(
+          ctx.adts,
+          forced_scrut_type,
+          branches,
+          ctx.meta_state,
+          Context.level(ctx.context)
+        )
 
       {:ok, {:case, scrut_term, Enum.reverse(checked_branches)}, ctx}
     end
@@ -882,72 +926,174 @@ defmodule Haruspex.Check do
   # Case branch context extension
   # ============================================================================
 
-  # Literal branch: 0 binders.
+  # Literal branch: 0 binders, no index equations.
   defp extend_branch_ctx(ctx, _scrut_type, {:__lit, value, _body}) do
-    {ctx, {:__lit, value, nil}}
+    {ctx, {:__lit, value, nil}, []}
   end
 
   # Wildcard with 0 binders.
   defp extend_branch_ctx(ctx, _scrut_type, {:_, 0, _body}) do
-    {ctx, {:_, 0, nil}}
+    {ctx, {:_, 0, nil}, []}
   end
 
   # Wildcard with 1 binder: bind scrutinee with its type.
   defp extend_branch_ctx(ctx, scrut_type, {:_, 1, _body}) do
-    {extend_ctx(ctx, :_match, scrut_type, :omega), {:_, 1, nil}}
+    {extend_ctx(ctx, :_match, scrut_type, :omega), {:_, 1, nil}, []}
   end
 
-  # Constructor branch: look up actual field types from ADT decl.
+  # Constructor branch: use GADT-aware field type refinement.
   defp extend_branch_ctx(ctx, scrut_type, {con_name, arity, _body}) do
-    inner_ctx =
-      case constructor_field_types(ctx, scrut_type, con_name, arity) do
-        {:ok, field_types} ->
-          Enum.reduce(field_types, ctx, fn field_type, c ->
+    case gadt_branch_ctx(ctx, scrut_type, con_name, arity) do
+      {:ok, field_types, updated_ctx, index_equations} ->
+        inner_ctx =
+          Enum.reduce(field_types, updated_ctx, fn field_type, c ->
             extend_ctx(c, :_field, field_type, :omega)
           end)
 
-        :error ->
-          # Fallback to placeholder types.
+        {inner_ctx, {con_name, arity, nil}, index_equations}
+
+      _impossible_or_error ->
+        # Fallback to placeholder types (branch is unreachable or non-ADT scrutinee).
+        inner_ctx =
           Enum.reduce(1..arity//1, ctx, fn _, c ->
             extend_ctx(c, :_field, {:vtype, {:llit, 0}}, :omega)
           end)
-      end
 
-    {inner_ctx, {con_name, arity, nil}}
+        {inner_ctx, {con_name, arity, nil}, []}
+    end
   end
 
-  # Look up constructor field types from the ADT declaration, evaluated
-  # under the scrutinee's type arguments.
-  defp constructor_field_types(ctx, {:vdata, type_name, type_args}, con_name, arity) do
+  # GADT-aware branch context: create fresh metas for type params, unify the
+  # constructor's return type with the scrutinee type, and extract refined
+  # field types from the solved metas.
+  #
+  # Neutral type-index args in the scrutinee are "relaxed" to fresh metas so
+  # that GADT unification can succeed even when the scrutinee has parametric
+  # indices (e.g., Vec(Int, n) where n is a free variable). The learned
+  # index equations (e.g., n = zero) are returned for refining the expected type.
+  #
+  # Returns {:ok, field_types, updated_ctx, index_equations} on success,
+  # :impossible when the constructor can't match, or :error for non-ADT.
+  defp gadt_branch_ctx(ctx, {:vdata, type_name, type_args} = _scrut_type, con_name, arity) do
     with {:ok, decl} <- Map.fetch(ctx.adts, type_name),
          con when con != nil <- Enum.find(decl.constructors, &(&1.name == con_name)),
          true <- length(con.fields) == arity do
-      # Evaluate field types with type args as environment.
-      # Type params are bound outermost-first, so reverse for de Bruijn env.
-      param_env = Enum.reverse(type_args)
-      eval_ctx = make_eval_ctx(ctx, param_env)
+      original_ms = ctx.meta_state
+      lvl = Context.level(ctx.context)
 
-      field_types =
-        Enum.map(con.fields, fn field_core ->
-          Eval.eval(eval_ctx, field_core)
+      # Replace neutral type-index args with fresh metas so unification can
+      # learn index equations (e.g., n = zero in the vnil branch).
+      {relaxed_scrut, index_meta_map, ms} =
+        relax_neutral_indices({:vdata, type_name, type_args}, original_ms, lvl)
+
+      # Create fresh metas for each type parameter, evaluating kinds
+      # incrementally under the partial env built so far.
+      {meta_vals, ms} =
+        Enum.reduce(decl.params, {[], ms}, fn {_name, kind_core}, {acc, ms} ->
+          param_env = Enum.reverse(acc)
+          eval_ctx = make_eval_ctx(%{ctx | meta_state: ms}, param_env)
+          kind_val = Eval.eval(eval_ctx, kind_core)
+
+          {id, ms} = MetaState.fresh_meta(ms, kind_val, lvl, :gadt)
+          meta_val = {:vneutral, kind_val, {:nmeta, id}}
+
+          {acc ++ [meta_val], ms}
         end)
 
-      {:ok, field_types}
+      # de Bruijn env: most recent binding at head.
+      param_env = Enum.reverse(meta_vals)
+
+      # Evaluate the constructor's return type under the fresh meta env.
+      return_type_core = con.return_type || default_return_type(decl)
+      eval_ctx = make_eval_ctx(%{ctx | meta_state: ms}, param_env)
+      return_type_val = Eval.eval(eval_ctx, return_type_core)
+
+      # Unify with the relaxed scrutinee type to solve index variables.
+      case Unify.unify(ms, lvl, return_type_val, relaxed_scrut) do
+        {:ok, solved_ms} ->
+          # Extract index equations: nvar_level → solved value.
+          index_equations =
+            Enum.flat_map(index_meta_map, fn {nvar_level, meta_id} ->
+              case MetaState.lookup(solved_ms, meta_id) do
+                {:solved, val} -> [{nvar_level, val}]
+                _ -> []
+              end
+            end)
+
+          # Force param env to get solved values, then evaluate field types.
+          forced_env = Enum.map(param_env, &MetaState.force(solved_ms, &1))
+          updated_ctx = %{ctx | meta_state: solved_ms}
+          eval_ctx = make_eval_ctx(updated_ctx, forced_env)
+
+          field_types =
+            Enum.map(con.fields, fn field_core ->
+              Eval.eval(eval_ctx, field_core)
+            end)
+
+          {:ok, field_types, updated_ctx, index_equations}
+
+        {:error, _} ->
+          :impossible
+      end
     else
       _ -> :error
     end
   end
 
-  defp constructor_field_types(_ctx, _scrut_type, _con_name, _arity), do: :error
+  defp gadt_branch_ctx(_ctx, _scrut_type, _con_name, _arity), do: :error
+
+  # Replace neutral variable args in an ADT type with fresh metas.
+  # Returns the relaxed type, a map of {nvar_level, meta_id}, and updated meta state.
+  defp relax_neutral_indices({:vdata, type_name, type_args}, ms, lvl) do
+    {relaxed_args, index_meta_map, ms} =
+      Enum.reduce(type_args, {[], [], ms}, fn
+        {:vneutral, type, {:nvar, var_level}}, {args, metas, ms} ->
+          {id, ms} = MetaState.fresh_meta(ms, type, lvl, :gadt)
+          meta_val = {:vneutral, type, {:nmeta, id}}
+          {args ++ [meta_val], [{var_level, id} | metas], ms}
+
+        arg, {args, metas, ms} ->
+          {args ++ [arg], metas, ms}
+      end)
+
+    {{:vdata, type_name, relaxed_args}, index_meta_map, ms}
+  end
+
+  # Default return type for non-GADT constructors: the fully-applied data type.
+  defp default_return_type(decl) do
+    n_params = length(decl.params)
+    args = Enum.map((n_params - 1)..0//-1, fn i -> {:var, i} end)
+    {:data, decl.name, args}
+  end
 
   # Evaluate the motive at a particular branch to get the expected type.
   # The motive is a core term where {:var, 0} stands for the scrutinee.
   # We substitute the scrutinee value back (since for non-dependent cases
   # the motive is just the expected type with no var 0 references).
-  defp eval_motive(ctx, motive_core, _branch, scrut_val) do
-    # Evaluate motive_core with the scrutinee value in scope.
-    env = [scrut_val]
-    eval_ctx = make_eval_ctx(ctx, env)
+  # Apply GADT index equations to the expected type. Quotes the expected value,
+  # evaluates it under a modified env where neutral vars are replaced by the
+  # values learned from GADT unification. This allows type-level functions
+  # like add(n, m) to reduce when n is known (e.g., n = zero in vnil branch).
+  defp apply_index_equations(ctx, expected, index_equations) do
+    lvl = Context.level(ctx.context)
+    env = Context.env(ctx.context)
+
+    modified_env =
+      Enum.reduce(index_equations, env, fn {var_level, value}, env ->
+        index = lvl - var_level - 1
+        List.replace_at(env, index, value)
+      end)
+
+    expected_core = Quote.quote_untyped(lvl, expected)
+
+    eval_ctx = make_eval_ctx(ctx, modified_env)
+    Eval.eval(eval_ctx, expected_core)
+  end
+
+  defp eval_motive(ctx, motive_core, _branch, _scrut_val) do
+    # The motive core term has de Bruijn indices relative to the quoting level.
+    # Evaluate under the full context env so free variables resolve correctly.
+    eval_ctx = make_eval_ctx(ctx, Context.env(ctx.context))
     Eval.eval(eval_ctx, motive_core)
   end
 
@@ -995,6 +1141,47 @@ defmodule Haruspex.Check do
         hole_reports: inner.hole_reports,
         class_param_metas: inner.class_param_metas
     }
+  end
+
+  # Peel off leading zero-multiplicity (implicit) Pi binders from a function
+  # type, wrapping the function term in applications to fresh metas. Used for
+  # function application when the caller provides only explicit arguments.
+  defp peel_implicit_apps(ctx, type, f_term) do
+    type = MetaState.force(ctx.meta_state, type)
+
+    case type do
+      {:vpi, :zero, dom, env, cod} ->
+        lvl = Context.level(ctx.context)
+        {id, ms} = MetaState.fresh_meta(ctx.meta_state, dom, lvl, :implicit)
+        meta_val = {:vneutral, dom, {:nmeta, id}}
+        ctx = %{ctx | meta_state: ms}
+        cod_val = Eval.eval(make_eval_ctx(ctx, [meta_val | env]), cod)
+        peel_implicit_apps(ctx, cod_val, {:app, f_term, {:meta, id}})
+
+      _ ->
+        {type, f_term, ctx}
+    end
+  end
+
+  # Peel off leading zero-multiplicity (implicit) Pi binders by inserting
+  # fresh metas. Returns the remaining type, the accumulated meta args (in
+  # reverse order for the reduce accumulator), and updated context.
+  defp peel_implicit_pis(ctx, type) do
+    type = MetaState.force(ctx.meta_state, type)
+
+    case type do
+      {:vpi, :zero, dom, env, cod} ->
+        lvl = Context.level(ctx.context)
+        {id, ms} = MetaState.fresh_meta(ctx.meta_state, dom, lvl, :implicit)
+        meta_val = {:vneutral, dom, {:nmeta, id}}
+        ctx = %{ctx | meta_state: ms}
+        cod_val = Eval.eval(make_eval_ctx(ctx, [meta_val | env]), cod)
+        {cod_val, acc, ctx} = peel_implicit_pis(ctx, cod_val)
+        {cod_val, [{:meta, id} | acc], ctx}
+
+      _ ->
+        {type, [], ctx}
+    end
   end
 
   defp eval_in(ctx, term) do

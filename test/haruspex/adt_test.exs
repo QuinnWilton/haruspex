@@ -165,10 +165,11 @@ defmodule Haruspex.ADTTest do
 
       # Outermost: Pi(:zero, Type, ...)
       assert {:pi, :zero, {:type, _}, inner} = some_type
-      # Inner: Pi(:omega, Var(0), Data(:Option, [Var(0)]))
-      # (Var(0) refers to `a` under the param binder; the return type was
-      # elaborated under the param binder scope)
-      assert {:pi, :omega, {:var, 0}, {:data, :Option, [{:var, 0}]}} = inner
+      # Inner: Pi(:omega, Var(0), Data(:Option, [Var(1)]))
+      # Under param binder: var 0 = a.
+      # Under param + field binder: var 0 = field param, var 1 = a.
+      # The return type is under the field binder, so a is at index 1.
+      assert {:pi, :omega, {:var, 0}, {:data, :Option, [{:var, 1}]}} = inner
     end
   end
 

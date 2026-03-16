@@ -241,11 +241,22 @@ defmodule Haruspex.Quote do
     {:def_ref, name}
   end
 
-  defp quote_neutral(lvl, {:ncase, ne, branches, _env}) do
+  defp quote_neutral(lvl, {:ncase, ne, branches, env}) do
     {:case, quote_neutral(lvl, ne),
      Enum.map(branches, fn
-       {:__lit, value, body} -> {:__lit, value, body}
-       {con_name, arity, body} -> {con_name, arity, body}
+       {:__lit, value, body} ->
+         body_val = Eval.eval(%{Eval.default_ctx() | env: env}, body)
+         {:__lit, value, quote_untyped(lvl, body_val)}
+
+       {con_name, arity, body} ->
+         # Create fresh vars for the constructor field bindings, reversed
+         # to match the vcase env layout (last field at index 0).
+         fresh_vars =
+           for i <- 0..(arity - 1)//1, do: Value.fresh_var(lvl + i, {:vtype, {:llit, 0}})
+
+         branch_env = Enum.reverse(fresh_vars) ++ env
+         body_val = Eval.eval(%{Eval.default_ctx() | env: branch_env}, body)
+         {con_name, arity, quote_untyped(lvl + arity, body_val)}
      end)}
   end
 end

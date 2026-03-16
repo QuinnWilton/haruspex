@@ -556,8 +556,16 @@ defmodule Haruspex do
         def_name = Roux.Runtime.field(db, Definition, entity_id, :name)
 
         case Roux.Runtime.query(db, :haruspex_elaborate, {uri, def_name}) do
-          {:ok, {_type, body}} -> Map.put(acc, def_name, {body, true})
-          _ -> acc
+          {:ok, {_type, body}} ->
+            # The elaborated body is checked under a context where the def name
+            # is bound at index 0 (outermost). Replace this self-reference with
+            # {:def_ref, name} so the body works correctly during type-level
+            # reduction (where the env doesn't include the def binding).
+            body = Haruspex.Core.subst(body, 0, {:def_ref, def_name})
+            Map.put(acc, def_name, {body, true})
+
+          _ ->
+            acc
         end
       else
         acc

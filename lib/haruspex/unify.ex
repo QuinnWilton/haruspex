@@ -110,14 +110,29 @@ defmodule Haruspex.Unify do
   defp solve_flex_rigid(ms, lvl, flex, rigid) do
     {meta_id, spine} = extract_spine(flex)
 
-    with :ok <- check_pattern(meta_id, spine),
-         spine_levels = Enum.map(spine, fn {:vneutral, _, {:nvar, l}} -> l end),
-         :ok <- occurs_check(ms, meta_id, rigid),
-         :ok <- scope_check(meta_id, rigid, spine_levels) do
-      solution = abstract(lvl, spine_levels, rigid)
-      # Evaluate the abstracted core term to get a value.
-      solution_val = Eval.eval(Eval.default_ctx(), solution)
-      MetaState.solve(ms, meta_id, solution_val)
+    if spine == [] do
+      # Bare meta (no spine): solve directly to the rigid value.
+      # The scope check uses the meta's creation level — the solution may
+      # only reference variables at levels below that.
+      {:unsolved, _, ctx_level, _} = MetaState.lookup(ms, meta_id)
+      allowed = Enum.to_list(0..(ctx_level - 1)//1)
+
+      with :ok <- occurs_check(ms, meta_id, rigid),
+           :ok <- scope_check(meta_id, rigid, allowed) do
+        MetaState.solve(ms, meta_id, rigid)
+      end
+    else
+      with :ok <- check_pattern(meta_id, spine),
+           spine_levels = Enum.map(spine, fn {:vneutral, _, {:nvar, l}} -> l end),
+           :ok <- occurs_check(ms, meta_id, rigid),
+           :ok <- scope_check(meta_id, rigid, spine_levels) do
+        solution = abstract(lvl, spine_levels, rigid)
+        # Evaluate the abstracted core term to get a value, passing the
+        # meta entries so that meta type annotations are preserved correctly.
+        eval_ctx = %{Eval.default_ctx() | metas: ms.entries}
+        solution_val = Eval.eval(eval_ctx, solution)
+        MetaState.solve(ms, meta_id, solution_val)
+      end
     end
   end
 
@@ -586,6 +601,12 @@ defmodule Haruspex.Unify do
     else
       {:error, {:mismatch, {:ndef, name1, args1}, {:ndef, name2, args2}}}
     end
+  end
+
+  # Stuck case expressions: if the scrutinees are equal (same stuck neutral),
+  # the cases produce the same result (same branches from the same definition).
+  defp unify_neutral(ms, lvl, {:ncase, ne1, _b1, _env1}, {:ncase, ne2, _b2, _env2}) do
+    unify_neutral(ms, lvl, ne1, ne2)
   end
 
   defp unify_neutral(_ms, _lvl, ne1, ne2) do

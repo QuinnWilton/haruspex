@@ -161,18 +161,20 @@ defmodule Haruspex.ADT do
   @spec constructor_type(adt_decl(), atom()) :: Core.expr()
   def constructor_type(decl, con_name) do
     con = Enum.find(decl.constructors, &(&1.name == con_name))
-
-    # The return type is the fully-applied data type.
     n_params = length(decl.params)
+    n_fields = length(con.fields)
 
+    # Both fields and return_type are stored in the param scope (indices 0..n_params-1).
+    # Build the Pi chain field_0 -> field_1 -> ... -> return_type where each term
+    # is shifted appropriately to account for the field binders it appears under.
+    #
+    # Field at position i (0-indexed) appears as a Pi domain under i preceding
+    # field binders, so it needs shifting by i. The return type is under all
+    # n_fields binders, so it needs shifting by n_fields.
     return_type =
       case con.return_type do
         nil ->
-          # Default return type: the data type applied to its params as variables.
-          # Under the field binders and param binders, the params are at indices
-          # (n_fields + n_params - 1) down to n_fields.
-          n_fields = length(con.fields)
-
+          # Default: params as vars, already shifted past field binders.
           args =
             Enum.map((n_params - 1)..0//-1, fn i ->
               {:var, n_fields + i}
@@ -181,15 +183,18 @@ defmodule Haruspex.ADT do
           {:data, decl.name, args}
 
         rt ->
-          rt
+          Core.shift(rt, n_fields, 0)
       end
 
-    # Build: fields -> return_type (innermost Pi chain).
+    # Build field Pi chain from inside out. Each field[i] at position i
+    # needs shifting by i to account for the i field binders above it.
     inner =
       con.fields
+      |> Enum.with_index()
       |> Enum.reverse()
-      |> Enum.reduce(return_type, fn field_type, acc ->
-        {:pi, :omega, field_type, acc}
+      |> Enum.reduce(return_type, fn {field_type, idx}, acc ->
+        shifted_field = Core.shift(field_type, idx, 0)
+        {:pi, :omega, shifted_field, acc}
       end)
 
     # Wrap with implicit params: {a : Type} -> ... (outermost).
