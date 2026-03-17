@@ -461,10 +461,16 @@ defmodule Haruspex.Elaborate do
 
     # Elaborate type parameters.
     {elab_params, inner_ctx} =
-      Enum.reduce(type_params, {[], ctx}, fn {param_name, kind_expr}, {acc, c} ->
-        {:ok, kind_core, c} = elaborate_type(c, kind_expr)
-        c = push_binding(c, param_name)
-        {[{param_name, kind_core} | acc], c}
+      Enum.reduce(type_params, {[], ctx}, fn
+        {:param, _pspan, {param_name, _mult, _erased?}, kind_expr}, {acc, c} ->
+          {:ok, kind_core, c} = elaborate_type(c, kind_expr)
+          c = push_binding(c, param_name)
+          {[{param_name, kind_core} | acc], c}
+
+        {param_name, kind_expr}, {acc, c} ->
+          {:ok, kind_core, c} = elaborate_type(c, kind_expr)
+          c = push_binding(c, param_name)
+          {[{param_name, kind_core} | acc], c}
       end)
 
     elab_params = Enum.reverse(elab_params)
@@ -558,10 +564,16 @@ defmodule Haruspex.Elaborate do
 
     # Elaborate type parameters.
     {elab_params, inner_ctx} =
-      Enum.reduce(type_params, {[], ctx}, fn {param_name, kind_expr}, {acc, c} ->
-        {:ok, kind_core, c} = elaborate_type(c, kind_expr)
-        c = push_binding(c, param_name)
-        {[{param_name, kind_core} | acc], c}
+      Enum.reduce(type_params, {[], ctx}, fn
+        {:param, _pspan, {param_name, _mult, _erased?}, kind_expr}, {acc, c} ->
+          {:ok, kind_core, c} = elaborate_type(c, kind_expr)
+          c = push_binding(c, param_name)
+          {[{param_name, kind_core} | acc], c}
+
+        {param_name, kind_expr}, {acc, c} ->
+          {:ok, kind_core, c} = elaborate_type(c, kind_expr)
+          c = push_binding(c, param_name)
+          {[{param_name, kind_core} | acc], c}
       end)
 
     elab_params = Enum.reverse(elab_params)

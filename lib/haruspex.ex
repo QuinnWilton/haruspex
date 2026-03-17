@@ -149,33 +149,50 @@ defmodule Haruspex do
         file_defs: file_defs
       )
 
-    # Elaborate type declarations first (order matters for mutual references).
+    # Pre-register placeholder ADTs for all type declarations so mutual
+    # references resolve (e.g., type Even referencing Odd and vice versa).
     ctx =
-      Enum.reduce(type_decls, ctx, fn td, ctx ->
-        {:ok, _decl, ctx} = Haruspex.Elaborate.elaborate_type_decl(ctx, td)
-        ctx
+      Enum.reduce(type_decls, ctx, fn {:type_decl, span, name, _params, _cons}, ctx ->
+        placeholder = %{
+          name: name,
+          params: [],
+          constructors: [],
+          universe_level: {:llit, 0},
+          span: span
+        }
+
+        %{ctx | adts: Map.put(ctx.adts, name, placeholder)}
       end)
+
+    # Helper to attempt elaboration, skipping on any failure.
+    try_elaborate = fn ctx, item, elaborate_fn ->
+      try do
+        case elaborate_fn.(ctx, item) do
+          {:ok, _decl, ctx} -> ctx
+          {:error, _} -> ctx
+        end
+      rescue
+        _ -> ctx
+      end
+    end
+
+    elab_type = &Haruspex.Elaborate.elaborate_type_decl/2
+    elab_record = &Haruspex.Elaborate.elaborate_record_decl/2
+    elab_class = &Haruspex.Elaborate.elaborate_class_decl/2
+    elab_instance = &Haruspex.Elaborate.elaborate_instance_decl/2
+
+    # Elaborate type declarations (order matters for mutual references).
+    ctx = Enum.reduce(type_decls, ctx, fn td, ctx -> try_elaborate.(ctx, td, elab_type) end)
 
     # Then record declarations.
-    ctx =
-      Enum.reduce(record_decls, ctx, fn rd, ctx ->
-        {:ok, _decl, ctx} = Haruspex.Elaborate.elaborate_record_decl(ctx, rd)
-        ctx
-      end)
+    ctx = Enum.reduce(record_decls, ctx, fn rd, ctx -> try_elaborate.(ctx, rd, elab_record) end)
 
     # Then class declarations (which generate dictionary records).
-    ctx =
-      Enum.reduce(class_decls, ctx, fn cd, ctx ->
-        {:ok, _decl, ctx} = Haruspex.Elaborate.elaborate_class_decl(ctx, cd)
-        ctx
-      end)
+    ctx = Enum.reduce(class_decls, ctx, fn cd, ctx -> try_elaborate.(ctx, cd, elab_class) end)
 
     # Then instance declarations.
     ctx =
-      Enum.reduce(instance_decls, ctx, fn ind, ctx ->
-        {:ok, _decl, ctx} = Haruspex.Elaborate.elaborate_instance_decl(ctx, ind)
-        ctx
-      end)
+      Enum.reduce(instance_decls, ctx, fn ind, ctx -> try_elaborate.(ctx, ind, elab_instance) end)
 
     {:ok, {ctx.adts, ctx.records, ctx.classes, ctx.instances}}
   end
@@ -224,16 +241,20 @@ defmodule Haruspex do
   `{:ok, {type_core, checked_body_core}}`.
   """
   defquery :haruspex_elaborate, key: {uri, name} do
-    {:ok, {type_core, body_core, elab_meta_state}} =
-      Roux.Runtime.query!(db, :haruspex_elaborate_core, {uri, name})
+    case Roux.Runtime.query!(db, :haruspex_elaborate_core, {uri, name}) do
+      {:ok, {type_core, body_core, elab_meta_state}} ->
+        check_result =
+          check_elaborated_def(db, uri, name, type_core, body_core, elab_meta_state)
 
-    check_result = check_elaborated_def(db, uri, name, type_core, body_core, elab_meta_state)
+        with {:ok, {type_core, checked_body}} <- check_result do
+          {:ok, entity_ids} = Roux.Runtime.query!(db, :haruspex_parse, uri)
+          entity_id = find_entity(db, entity_ids, name)
+          update_entity(db, entity_id, %{type: type_core, body: checked_body})
+          {:ok, {type_core, checked_body}}
+        end
 
-    with {:ok, {type_core, checked_body}} <- check_result do
-      {:ok, entity_ids} = Roux.Runtime.query!(db, :haruspex_parse, uri)
-      entity_id = find_entity(db, entity_ids, name)
-      update_entity(db, entity_id, %{type: type_core, body: checked_body})
-      {:ok, {type_core, checked_body}}
+      {:error, _} = err ->
+        err
     end
   end
 
@@ -522,11 +543,12 @@ defmodule Haruspex do
 
       {:mutual, _span, defs}, {ids, imports, no_prelude?, tds, rds, cds, inds, mgs, imds} ->
         # Create Definition entities for each def in the mutual block.
-        {new_ids, group_names} =
-          Enum.reduce(defs, {[], []}, fn
+        # Type declarations inside mutual blocks are collected into tds.
+        {new_ids, group_names, mutual_tds} =
+          Enum.reduce(defs, {[], [], []}, fn
             {:def, span, {:sig, _sig_span, name, name_span, _params, _ret, attrs}, _body} =
                 def_ast,
-            {id_acc, name_acc} ->
+            {id_acc, name_acc, td_acc} ->
               entity_id =
                 Roux.Runtime.create(db, Definition, %{
                   uri: uri,
@@ -543,10 +565,17 @@ defmodule Haruspex do
                   name_span: name_span
                 })
 
-              {id_acc ++ [entity_id], name_acc ++ [name]}
+              {id_acc ++ [entity_id], name_acc ++ [name], td_acc}
+
+            {:type_decl, _, _, _, _} = td, {id_acc, name_acc, td_acc} ->
+              {id_acc, name_acc, td_acc ++ [td]}
+
+            _other, acc ->
+              acc
           end)
 
-        {ids ++ new_ids, imports, no_prelude?, tds, rds, cds, inds, mgs ++ [group_names], imds}
+        {ids ++ new_ids, imports, no_prelude?, tds ++ mutual_tds, rds, cds, inds,
+         mgs ++ [group_names], imds}
 
       _other, acc ->
         acc

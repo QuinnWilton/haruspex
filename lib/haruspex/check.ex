@@ -225,6 +225,11 @@ defmodule Haruspex.Check do
     end
   end
 
+  # Lambda: cannot synthesize — lambdas must be checked against a known type.
+  def synth(_ctx, {:lam, _mult, _body}) do
+    {:error, {:cannot_synth_lambda}}
+  end
+
   # ADT type constructor.
   def synth(ctx, {:data, name, args}) do
     case Map.fetch(ctx.adts, name) do
@@ -250,49 +255,56 @@ defmodule Haruspex.Check do
   def synth(ctx, {:con, type_name, con_name, args}) do
     case Map.fetch(ctx.adts, type_name) do
       {:ok, decl} ->
-        con_type_core = Haruspex.ADT.constructor_type(decl, con_name)
-        con_type_val = eval_in(ctx, con_type_core)
+        try do
+          con_type_core = Haruspex.ADT.constructor_type(decl, con_name)
+          con_type_val = eval_in(ctx, con_type_core)
 
-        # Insert fresh metas for zero-multiplicity (implicit) params when
-        # only explicit field args are provided (elaboration doesn't insert
-        # implicits). Skip if args already include the implicit params.
-        con = Enum.find(decl.constructors, &(&1.name == con_name))
-        n_fields = if con, do: length(con.fields), else: length(args)
+          # Insert fresh metas for zero-multiplicity (implicit) params when
+          # only explicit field args are provided (elaboration doesn't insert
+          # implicits). Skip if args already include the implicit params.
+          con = Enum.find(decl.constructors, &(&1.name == con_name))
+          n_fields = if con, do: length(con.fields), else: length(args)
 
-        {con_type_val, _implicit_args, ctx} =
-          if length(args) <= n_fields do
-            peel_implicit_pis(ctx, con_type_val)
-          else
-            {con_type_val, [], ctx}
-          end
-
-        {checked_args, result_type, ctx} =
-          Enum.reduce(args, {[], con_type_val, ctx}, fn arg, {acc, fun_type, ctx} ->
-            fun_type = Eval.whnf(make_eval_ctx(ctx, []), fun_type)
-
-            case fun_type do
-              {:vpi, _mult, dom, env, cod} ->
-                dom = Eval.whnf(make_eval_ctx(ctx, []), dom)
-
-                case check(ctx, arg, dom) do
-                  {:ok, arg_term, ctx} ->
-                    arg_val = eval_in(ctx, arg_term)
-                    cod_val = Eval.eval(make_eval_ctx(ctx, [arg_val | env]), cod)
-                    cod_val = Eval.whnf(make_eval_ctx(ctx, []), cod_val)
-                    {[arg_term | acc], cod_val, ctx}
-                end
-
-              _ ->
-                # Overapplied? Just accumulate.
-                case synth(ctx, arg) do
-                  {:ok, arg_term, _type, ctx} -> {[arg_term | acc], fun_type, ctx}
-                end
+          {con_type_val, _implicit_args, ctx} =
+            if length(args) <= n_fields do
+              peel_implicit_pis(ctx, con_type_val)
+            else
+              {con_type_val, [], ctx}
             end
-          end)
 
-        # Output only the original args (excluding inserted implicit metas)
-        # since implicit type params are erased at runtime.
-        {:ok, {:con, type_name, con_name, Enum.reverse(checked_args)}, result_type, ctx}
+          {checked_args, result_type, ctx} =
+            Enum.reduce(args, {[], con_type_val, ctx}, fn arg, {acc, fun_type, ctx} ->
+              fun_type = Eval.whnf(make_eval_ctx(ctx, []), fun_type)
+
+              case fun_type do
+                {:vpi, _mult, dom, env, cod} ->
+                  dom = Eval.whnf(make_eval_ctx(ctx, []), dom)
+
+                  case check(ctx, arg, dom) do
+                    {:ok, arg_term, ctx} ->
+                      arg_val = eval_in(ctx, arg_term)
+                      cod_val = Eval.eval(make_eval_ctx(ctx, [arg_val | env]), cod)
+                      cod_val = Eval.whnf(make_eval_ctx(ctx, []), cod_val)
+                      {[arg_term | acc], cod_val, ctx}
+
+                    {:error, _} = err ->
+                      throw(err)
+                  end
+
+                _ ->
+                  # Overapplied? Just accumulate.
+                  case synth(ctx, arg) do
+                    {:ok, arg_term, _type, ctx} -> {[arg_term | acc], fun_type, ctx}
+                  end
+              end
+            end)
+
+          # Output only the original args (excluding inserted implicit metas)
+          # since implicit type params are erased at runtime.
+          {:ok, {:con, type_name, con_name, Enum.reverse(checked_args)}, result_type, ctx}
+        catch
+          {:error, _} = err -> err
+        end
 
       :error ->
         # Unknown ADT — synthesize args structurally.
@@ -530,42 +542,52 @@ defmodule Haruspex.Check do
       forced_scrut_type = Eval.whnf(make_eval_ctx(ctx, []), scrut_type)
 
       # Type check each branch with refined expected types.
-      {checked_branches, ctx} =
-        Enum.reduce(branches, {[], ctx}, fn branch, {acc, ctx} ->
-          {inner_ctx, branch_head, index_equations} =
-            extend_branch_ctx(ctx, forced_scrut_type, branch)
+      result =
+        try do
+          {checked_branches, ctx} =
+            Enum.reduce(branches, {[], ctx}, fn branch, {acc, ctx} ->
+              {inner_ctx, branch_head, index_equations} =
+                extend_branch_ctx(ctx, forced_scrut_type, branch)
 
-          # For GADT branches with index equations (e.g., n = zero in vnil),
-          # substitute the learned equalities into the expected type so
-          # type-level functions reduce. Otherwise use the expected type as-is.
-          branch_expected =
-            if index_equations != [] do
-              apply_index_equations(inner_ctx, expected, index_equations)
-            else
-              expected
-            end
+              # For GADT branches with index equations (e.g., n = zero in vnil),
+              # substitute the learned equalities into the expected type so
+              # type-level functions reduce. Otherwise use the expected type as-is.
+              branch_expected =
+                if index_equations != [] do
+                  apply_index_equations(inner_ctx, expected, index_equations)
+                else
+                  expected
+                end
 
-          body = elem(branch, tuple_size(branch) - 1)
+              body = elem(branch, tuple_size(branch) - 1)
 
-          case check(inner_ctx, body, branch_expected) do
-            {:ok, body_term, inner_ctx} ->
-              ctx = restore_ctx(ctx, inner_ctx)
-              checked = put_elem(branch_head, tuple_size(branch_head) - 1, body_term)
-              {[checked | acc], ctx}
-          end
-        end)
+              case check(inner_ctx, body, branch_expected) do
+                {:ok, body_term, inner_ctx} ->
+                  ctx = restore_ctx(ctx, inner_ctx)
+                  checked = put_elem(branch_head, tuple_size(branch_head) - 1, body_term)
+                  {[checked | acc], ctx}
 
-      # Exhaustiveness checking (warnings only, GADT-aware).
-      _exhaust =
-        Haruspex.Pattern.check_exhaustiveness(
-          ctx.adts,
-          forced_scrut_type,
-          branches,
-          ctx.meta_state,
-          Context.level(ctx.context)
-        )
+                {:error, _} = err ->
+                  throw(err)
+              end
+            end)
 
-      {:ok, {:case, scrut_term, Enum.reverse(checked_branches)}, ctx}
+          # Exhaustiveness checking (warnings only, GADT-aware).
+          _exhaust =
+            Haruspex.Pattern.check_exhaustiveness(
+              ctx.adts,
+              forced_scrut_type,
+              branches,
+              ctx.meta_state,
+              Context.level(ctx.context)
+            )
+
+          {:ok, {:case, scrut_term, Enum.reverse(checked_branches)}, ctx}
+        catch
+          {:error, _} = err -> err
+        end
+
+      result
     end
   end
 
