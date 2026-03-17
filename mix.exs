@@ -45,10 +45,10 @@ defmodule Haruspex.MixProject do
 
   defp deps do
     [
-      {:roux, path: "../roux"},
-      {:pentiment, path: "../pentiment"},
-      {:quail, path: "../quail"},
-      {:constrain, path: "../constrain"},
+      {:roux, github: "quinnwilton/roux"},
+      {:pentiment, github: "quinnwilton/pentiment"},
+      {:quail, github: "quinnwilton/quail"},
+      {:constrain, github: "quinnwilton/constrain"},
       {:nimble_parsec, "~> 1.4"},
       {:stream_data, "~> 1.2", only: [:test]},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
