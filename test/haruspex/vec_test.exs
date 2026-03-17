@@ -403,5 +403,47 @@ defmodule Haruspex.VecTest do
       :code.purge(mod)
       :code.delete(mod)
     end
+
+    test "vappend with @implicit auto-implicit syntax compiles and runs" do
+      db = Roux.Database.new()
+      Roux.Lang.register(db, Haruspex)
+
+      Roux.Input.set(db, :source_text, "lib/vappend_auto.hx", """
+      type Nat = zero | succ(Nat)
+
+      type Vec(a : Type, n : Nat) =
+        vnil : Vec(a, zero)
+        | vcons(a, Vec(a, n)) : Vec(a, succ(n))
+
+      @implicit {n : Nat} {m : Nat}
+
+      @total
+      def add(n : Nat, m : Nat) : Nat do
+        case n do
+          zero -> m
+          succ(k) -> succ(add(k, m))
+        end
+      end
+
+      @total
+      def vappend(xs : Vec(Int, n), ys : Vec(Int, m)) : Vec(Int, add(n, m)) do
+        case xs do
+          vnil -> ys
+          vcons(x, rest) -> vcons(x, vappend(rest, ys))
+        end
+      end
+      """)
+
+      {:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, "lib/vappend_auto.hx")
+
+      v1 = mod.vcons(1, mod.vnil())
+      v2 = mod.vcons(2, mod.vcons(3, mod.vnil()))
+      result = mod.vappend(v1, v2)
+
+      assert {:vcons, 1, {:vcons, 2, {:vcons, 3, :vnil}}} = result
+
+      :code.purge(mod)
+      :code.delete(mod)
+    end
   end
 end
