@@ -27,6 +27,7 @@ defmodule Haruspex.Value do
           | {:vlit, Core.literal()}
           | {:vbuiltin, atom() | {atom(), [value()]}}
           | {:vextern, module(), atom(), arity()}
+          | {:vglobal, module(), atom(), arity()}
           | {:vneutral, value(), neutral()}
           | {:vdata, atom(), [value()]}
           | {:vcon, atom(), atom(), [value()]}

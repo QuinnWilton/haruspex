@@ -606,13 +606,16 @@ defmodule Haruspex.WithTest do
     test "let: target in body (shifted)", %{ms: ms} do
       goal = {:let, {:builtin, :Float}, {:builtin, :Int}}
       {:ok, result} = Pattern.abstract_core_term(goal, {:builtin, :Int}, ms, 0)
-      assert {:let, {:builtin, :Float}, {:var, 0}} = result
+      # NbE: let x = Float in Int evaluates to Int (let-reduction), matching target.
+      # The whole expression is replaced at the top level.
+      assert {:var, 0} = result
     end
 
     test "let: target in both", %{ms: ms} do
       goal = {:let, {:builtin, :Int}, {:builtin, :Int}}
       {:ok, result} = Pattern.abstract_core_term(goal, {:builtin, :Int}, ms, 0)
-      assert {:let, {:var, 0}, {:var, 0}} = result
+      # NbE: let x = Int in Int evaluates to Int, matching target.
+      assert {:var, 0} = result
     end
 
     test "let: var target shifts under binder", %{ms: ms} do
@@ -797,7 +800,8 @@ defmodule Haruspex.WithTest do
     test "deeply nested: target inside pair inside fst", %{ms: ms} do
       goal = {:fst, {:pair, {:builtin, :Int}, {:builtin, :Float}}}
       {:ok, result} = Pattern.abstract_core_term(goal, {:builtin, :Int}, ms, 0)
-      assert {:fst, {:pair, {:var, 0}, {:builtin, :Float}}} = result
+      # NbE: fst(pair(Int, Float)) evaluates to Int, matching target.
+      assert {:var, 0} = result
     end
 
     test "deeply nested: target inside app inside snd", %{ms: ms} do

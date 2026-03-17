@@ -190,7 +190,7 @@ defmodule Haruspex.Pattern do
   # Walk a core term, replacing occurrences of `target` with {:var, 0}
   # (shifted appropriately under binders).
   defp abstract_core(term, target, ms, lvl) do
-    if core_convertible?(term, target) do
+    if core_convertible?(term, target, ms, lvl) do
       {:var, 0}
     else
       abstract_subterms(term, target, ms, lvl)
@@ -272,11 +272,40 @@ defmodule Haruspex.Pattern do
   # Leaves: var, lit, builtin, type, extern, global, meta, erased, spanned.
   defp abstract_subterms(term, _target, _ms, _lvl), do: term
 
-  # Check if two core terms are syntactically equal (simple structural comparison).
-  # For a more precise check, we could evaluate both and use NbE conversion,
-  # but syntactic equality is sufficient for the common case where the
-  # scrutinee appears literally in the goal type.
-  defp core_convertible?(term, target) do
-    term == target
+  # Check if two core terms are convertible. Uses syntactic equality first
+  # (fast path), then falls back to NbE conversion via evaluation + unification
+  # for cases where terms normalize to the same value but differ syntactically
+  # (e.g., after eta-expansion, beta-reduction, or meta substitution).
+  defp core_convertible?(term, target, _ms, _lvl) when term == target, do: true
+
+  defp core_convertible?(term, target, ms, lvl) do
+    # Build env large enough for both terms' maximum variable index.
+    max_var = max(core_max_var(term), core_max_var(target))
+    env_size = max(lvl, max_var + 1)
+    env = for i <- (env_size - 1)..0//-1, do: Value.fresh_var(i, {:vtype, {:llit, 0}})
+    eval_ctx = %{Eval.default_ctx() | env: env, metas: MetaState.solved_entries(ms)}
+
+    try do
+      term_val = Eval.eval(eval_ctx, term)
+      target_val = Eval.eval(eval_ctx, target)
+      match?({:ok, _}, Unify.unify(ms, lvl, term_val, target_val))
+    rescue
+      _ -> false
+    end
   end
+
+  # Find the maximum de Bruijn variable index in a core term.
+  defp core_max_var({:var, ix}), do: ix
+
+  defp core_max_var(term) when is_tuple(term) do
+    term
+    |> Tuple.to_list()
+    |> Enum.reduce(-1, fn
+      e, acc when is_tuple(e) -> max(acc, core_max_var(e))
+      e, acc when is_list(e) -> Enum.reduce(e, acc, fn t, a -> max(a, core_max_var(t)) end)
+      _, acc -> acc
+    end)
+  end
+
+  defp core_max_var(_), do: -1
 end

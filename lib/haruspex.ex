@@ -589,7 +589,7 @@ defmodule Haruspex do
   # Returns %{name => {body_core, true}} for each total def with an elaborated body.
   # Collect @total definitions for type-level reduction, excluding
   # the definition currently being checked (to avoid query cycles).
-  defp collect_total_defs(db, uri, exclude_name \\ nil) do
+  defp collect_total_defs(db, uri, exclude_name) do
     {:ok, entity_ids} = Roux.Runtime.query!(db, :haruspex_parse, uri)
 
     Enum.reduce(entity_ids, %{}, fn entity_id, acc ->
