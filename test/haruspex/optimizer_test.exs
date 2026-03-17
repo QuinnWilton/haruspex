@@ -1,5 +1,6 @@
 defmodule Haruspex.OptimizerTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias Haruspex.Core
   alias Haruspex.Optimizer
@@ -426,6 +427,98 @@ defmodule Haruspex.OptimizerTest do
       enode = %Quail.ENode{op: :ir_app, children: [{1, %{}}, {2, %{}}], data: []}
       child_costs = %{1 => 3, 2 => 5}
       assert Haruspex.Optimizer.Cost.node_cost(enode, child_costs) == 2 + 3 + 5
+    end
+
+    test "constructor atom gets base cost 2" do
+      con_op = Haruspex.Optimizer.Lower.con_op(:Nat, :succ)
+      enode = %Quail.ENode{op: con_op, children: [{1, %{}}], data: []}
+      assert Haruspex.Optimizer.Cost.node_cost(enode, %{1 => 1}) == 2 + 1
+    end
+
+    test "non-atom op gets base cost 1" do
+      enode = %Quail.ENode{op: {"not_an_atom"}, children: [], data: []}
+      assert Haruspex.Optimizer.Cost.node_cost(enode, %{}) == 1
+    end
+  end
+
+  # ============================================================================
+  # Spec integration tests
+  # ============================================================================
+
+  describe "spec integration" do
+    test "optimize preserves semantics for addition with zero" do
+      # f(x) = x + 0 should optimize to f(x) = x
+      body = {:app, {:app, {:builtin, :add}, {:var, 0}}, {:lit, 0}}
+      optimized = Optimizer.optimize(body)
+      assert optimized == {:var, 0}
+    end
+
+    test "optimize preserves semantics for multiplication by one" do
+      body = {:app, {:app, {:builtin, :mul}, {:var, 0}}, {:lit, 1}}
+      optimized = Optimizer.optimize(body)
+      assert optimized == {:var, 0}
+    end
+
+    test "optimize preserves semantics for double negation" do
+      body = {:app, {:builtin, :not}, {:app, {:builtin, :not}, {:var, 0}}}
+      optimized = Optimizer.optimize(body)
+      assert optimized == {:var, 0}
+    end
+
+    test "optimize preserves semantics for fst(pair(a, b))" do
+      body = {:fst, {:pair, {:lit, 1}, {:lit, 2}}}
+      optimized = Optimizer.optimize(body)
+      assert optimized == {:lit, 1}
+    end
+
+    test "already optimal term passes through unchanged" do
+      body = {:app, {:app, {:builtin, :add}, {:var, 0}}, {:var, 1}}
+      optimized = Optimizer.optimize(body)
+      assert optimized == body
+    end
+  end
+
+  # ============================================================================
+  # Property tests
+  # ============================================================================
+
+  describe "semantics preservation" do
+    property "optimize preserves eval for arithmetic with literals" do
+      check all(
+              a <- integer(-100..100),
+              b <- integer(-100..100),
+              op <- member_of([:add, :sub, :mul])
+            ) do
+        term = {:app, {:app, {:builtin, op}, {:lit, a}}, {:lit, b}}
+        optimized = Optimizer.optimize(term)
+
+        original_val = Haruspex.Eval.eval(Haruspex.Eval.default_ctx(), term)
+        optimized_val = Haruspex.Eval.eval(Haruspex.Eval.default_ctx(), optimized)
+
+        assert original_val == optimized_val
+      end
+    end
+  end
+
+  # ============================================================================
+  # Pipeline integration
+  # ============================================================================
+
+  describe "pipeline integration" do
+    test "function with redundant arithmetic compiles to simpler output" do
+      db = Roux.Database.new()
+      Roux.Lang.register(db, Haruspex)
+
+      Roux.Input.set(db, :source_text, "lib/opt_test.hx", """
+      def add_zero(x : Int) : Int do x + 0 end
+      def mul_one(x : Int) : Int do x * 1 end
+      """)
+
+      {:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, "lib/opt_test.hx")
+      assert mod.add_zero(42) == 42
+      assert mod.mul_one(7) == 7
+      :code.purge(mod)
+      :code.delete(mod)
     end
   end
 end
