@@ -479,6 +479,78 @@ defmodule Haruspex.OptimizerTest do
   end
 
   # ============================================================================
+  # Conditional folding
+  # ============================================================================
+
+  describe "conditional folding" do
+    test "case on true literal selects matching branch" do
+      # case true of true -> 1; false -> 2  →  1
+      term =
+        {:case, {:lit, true},
+         [
+           {:__lit, true, {:lit, 1}},
+           {:__lit, false, {:lit, 2}}
+         ]}
+
+      assert {:lit, 1} = Optimizer.optimize(term)
+    end
+
+    test "case on false literal selects matching branch" do
+      term =
+        {:case, {:lit, false},
+         [
+           {:__lit, true, {:lit, 1}},
+           {:__lit, false, {:lit, 2}}
+         ]}
+
+      assert {:lit, 2} = Optimizer.optimize(term)
+    end
+
+    test "case on integer literal selects matching branch" do
+      term =
+        {:case, {:lit, 42},
+         [
+           {:__lit, 0, {:lit, :zero}},
+           {:__lit, 42, {:lit, :answer}},
+           {:_, 0, {:lit, :other}}
+         ]}
+
+      assert {:lit, :answer} = Optimizer.optimize(term)
+    end
+
+    test "case on literal with wildcard fallback" do
+      term =
+        {:case, {:lit, 99},
+         [
+           {:__lit, 0, {:lit, :zero}},
+           {:_, 0, {:lit, :fallback}}
+         ]}
+
+      assert {:lit, :fallback} = Optimizer.optimize(term)
+    end
+
+    test "nested conditional folding" do
+      # case true of true -> (case false of true -> 1; false -> 2); false -> 3
+      inner =
+        {:case, {:lit, false}, [{:__lit, true, {:lit, 1}}, {:__lit, false, {:lit, 2}}]}
+
+      term =
+        {:case, {:lit, true}, [{:__lit, true, inner}, {:__lit, false, {:lit, 3}}]}
+
+      assert {:lit, 2} = Optimizer.optimize(term)
+    end
+
+    test "case on non-literal scrutinee is not folded" do
+      term =
+        {:case, {:var, 0}, [{:__lit, true, {:lit, 1}}, {:__lit, false, {:lit, 2}}]}
+
+      result = Optimizer.optimize(term)
+      # Should preserve the case structure.
+      assert {:case, _, _} = result
+    end
+  end
+
+  # ============================================================================
   # Property tests
   # ============================================================================
 

@@ -30,6 +30,7 @@ defmodule Haruspex.Optimizer do
   @spec optimize(Core.expr()) :: Core.expr()
   def optimize(term) do
     ir = Lower.lower(term)
+    ir = reduce(ir)
     db = Quail.new()
     {root_id, db} = Quail.add_term(db, ir)
     result = Quail.run(db, Rules.rules(), iter_limit: 30)
@@ -42,5 +43,49 @@ defmodule Haruspex.Optimizer do
         # If extraction fails (cycle, dangling slot), return the original term.
         term
     end
+  end
+
+  # Pre-optimization reductions that are hard to express as e-graph rules.
+  # Walks the IR tree and reduces known-scrutinee case expressions and
+  # constant arithmetic.
+  @spec reduce(Lower.ir()) :: Lower.ir()
+  defp reduce({:ir_case, scrutinee, branches}) do
+    scrutinee = reduce(scrutinee)
+
+    case scrutinee do
+      {:ir_lit, value} ->
+        case find_branch(branches, value) do
+          {:ok, body} -> reduce(body)
+          :error -> {:ir_case, scrutinee, reduce_branches(branches)}
+        end
+
+      _ ->
+        {:ir_case, scrutinee, reduce_branches(branches)}
+    end
+  end
+
+  defp reduce({:ir_app, f, a}), do: {:ir_app, reduce(f), reduce(a)}
+  defp reduce({:ir_lam, body}), do: {:ir_lam, reduce(body)}
+  defp reduce({:ir_let, d, b}), do: {:ir_let, reduce(d), reduce(b)}
+  defp reduce({:ir_pair, a, b}), do: {:ir_pair, reduce(a), reduce(b)}
+  defp reduce({:ir_fst, e}), do: {:ir_fst, reduce(e)}
+  defp reduce({:ir_snd, e}), do: {:ir_snd, reduce(e)}
+  defp reduce({:ir_record_proj, f, e}), do: {:ir_record_proj, f, reduce(e)}
+  defp reduce(term), do: term
+
+  defp reduce_branches(branches) do
+    Enum.map(branches, fn
+      {:ir_branch_lit, v, body} -> {:ir_branch_lit, v, reduce(body)}
+      {:ir_branch, con, arity, body} -> {:ir_branch, con, arity, reduce(body)}
+    end)
+  end
+
+  # Find the matching branch for a literal scrutinee.
+  defp find_branch(branches, value) do
+    Enum.find_value(branches, :error, fn
+      {:ir_branch_lit, ^value, body} -> {:ok, body}
+      {:ir_branch, :_, _arity, body} -> {:ok, body}
+      _ -> nil
+    end)
   end
 end
