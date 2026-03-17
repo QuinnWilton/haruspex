@@ -3,3 +3,4 @@
 /cover/
 /priv/plts/
 erl_crash.dump
+tree-sitter-haruspex/node_modules/

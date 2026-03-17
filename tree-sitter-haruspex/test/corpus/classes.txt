@@ -1,0 +1,144 @@
+===
+Class declaration
+===
+
+class Functor(f : Type -> Type) do
+  fmap : (a -> b) -> f(a) -> f(b)
+end
+
+---
+
+(source_file
+  (class_declaration
+    name: (type_identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        type: (arrow_expression
+          domain: (type_universe)
+          codomain: (type_universe))))
+    (method_signature
+      name: (identifier)
+      type: (arrow_expression
+        domain: (parenthesized_expression
+          (arrow_expression
+            domain: (variable
+              (identifier))
+            codomain: (variable
+              (identifier))))
+        codomain: (arrow_expression
+          domain: (application
+            function: (variable
+              (identifier))
+            argument: (variable
+              (identifier)))
+          codomain: (application
+            function: (variable
+              (identifier))
+            argument: (variable
+              (identifier))))))))
+
+===
+Instance declaration
+===
+
+instance Functor(Option) do
+  def fmap(func : a -> b, opt : Option) : Option do
+    opt
+  end
+end
+
+---
+
+(source_file
+  (instance_declaration
+    class_name: (type_identifier)
+    (type_variable
+      (type_identifier))
+    (definition
+      name: (identifier)
+      (parameter_list
+        (parameter
+          name: (identifier)
+          type: (arrow_expression
+            domain: (variable
+              (identifier))
+            codomain: (variable
+              (identifier))))
+        (parameter
+          name: (identifier)
+          type: (type_variable
+            (type_identifier))))
+      (return_type
+        (type_variable
+          (type_identifier)))
+      (do_block
+        (variable
+          (identifier))))))
+
+===
+Mutual block
+===
+
+mutual do
+  def is_even(n : Int) : Bool do
+    if n == 0 do true else is_odd(n - 1) end
+  end
+
+  def is_odd(n : Int) : Bool do
+    if n == 0 do false else is_even(n - 1) end
+  end
+end
+
+---
+
+(source_file
+  (mutual_block
+    (definition
+      name: (identifier)
+      (parameter_list
+        (parameter
+          name: (identifier)
+          type: (type_variable
+            (type_identifier))))
+      (return_type
+        (type_variable
+          (type_identifier)))
+      (do_block
+        (if_expression
+          condition: (binary_expression
+            left: (variable
+              (identifier))
+            right: (integer))
+          then: (boolean)
+          else: (application
+            function: (variable
+              (identifier))
+            argument: (binary_expression
+              left: (variable
+                (identifier))
+              right: (integer))))))
+    (definition
+      name: (identifier)
+      (parameter_list
+        (parameter
+          name: (identifier)
+          type: (type_variable
+            (type_identifier))))
+      (return_type
+        (type_variable
+          (type_identifier)))
+      (do_block
+        (if_expression
+          condition: (binary_expression
+            left: (variable
+              (identifier))
+            right: (integer))
+          then: (boolean)
+          else: (application
+            function: (variable
+              (identifier))
+            argument: (binary_expression
+              left: (variable
+                (identifier))
+              right: (integer))))))))

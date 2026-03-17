@@ -1,0 +1,31 @@
+{
+  "grammars": [
+    {
+      "name": "haruspex",
+      "camelcase": "Haruspex",
+      "scope": "source.haruspex",
+      "path": ".",
+      "file-types": [
+        "hx"
+      ],
+      "highlights": "queries/highlights.scm",
+      "injection-regex": "haruspex"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Tree-sitter grammar for the Haruspex dependently typed language",
+    "links": {
+      "repository": "https://github.com/beam-box/haruspex"
+    }
+  },
+  "bindings": {
+    "c": true,
+    "go": true,
+    "node": true,
+    "python": true,
+    "rust": true,
+    "swift": true
+  }
+}

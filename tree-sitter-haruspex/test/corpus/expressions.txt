@@ -1,0 +1,423 @@
+===
+Integer literal
+===
+
+def x : Int do
+  42
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (return_type
+      (type_variable
+        (type_identifier)))
+    (do_block
+      (integer))))
+
+===
+String literal
+===
+
+def x : String do
+  "hello"
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (return_type
+      (type_variable
+        (type_identifier)))
+    (do_block
+      (string))))
+
+===
+Boolean literal
+===
+
+def x : Bool do
+  true
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (return_type
+      (type_variable
+        (type_identifier)))
+    (do_block
+      (boolean))))
+
+===
+Atom literal
+===
+
+def x : Atom do
+  :hello
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (return_type
+      (type_variable
+        (type_identifier)))
+    (do_block
+      (atom
+        (identifier)))))
+
+===
+Function application
+===
+
+def x : Nat do
+  succ(zero)
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (return_type
+      (type_variable
+        (type_identifier)))
+    (do_block
+      (application
+        function: (variable
+          (identifier))
+        argument: (variable
+          (identifier))))))
+
+===
+Binary operators
+===
+
+def x : Int do
+  1 + 2 * 3
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (return_type
+      (type_variable
+        (type_identifier)))
+    (do_block
+      (binary_expression
+        left: (integer)
+        right: (binary_expression
+          left: (integer)
+          right: (integer))))))
+
+===
+Lambda expression
+===
+
+def x : Int do
+  fn(x : Int) -> x + 1 end
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (return_type
+      (type_variable
+        (type_identifier)))
+    (do_block
+      (lambda
+        (parameter_list
+          (parameter
+            name: (identifier)
+            type: (type_variable
+              (type_identifier))))
+        (binary_expression
+          left: (variable
+            (identifier))
+          right: (integer))))))
+
+===
+Case expression
+===
+
+def x(n : Nat) : Nat do
+  case n do
+    zero -> n
+    succ(m) -> m
+  end
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        type: (type_variable
+          (type_identifier))))
+    (return_type
+      (type_variable
+        (type_identifier)))
+    (do_block
+      (case_expression
+        scrutinee: (variable
+          (identifier))
+        (case_branch
+          pattern: (constructor_pattern
+            name: (identifier))
+          body: (variable
+            (identifier)))
+        (case_branch
+          pattern: (constructor_pattern
+            name: (identifier)
+            (constructor_pattern
+              name: (identifier)))
+          body: (variable
+            (identifier)))))))
+
+===
+Let expression
+===
+
+def x : Int do
+  let y = 1
+  y + 2
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (return_type
+      (type_variable
+        (type_identifier)))
+    (do_block
+      (let_expression
+        name: (identifier)
+        value: (integer)
+        body: (binary_expression
+          left: (variable
+            (identifier))
+          right: (integer))))))
+
+===
+If expression
+===
+
+def x(b : Bool) : Int do
+  if b do 1 else 0 end
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        type: (type_variable
+          (type_identifier))))
+    (return_type
+      (type_variable
+        (type_identifier)))
+    (do_block
+      (if_expression
+        condition: (variable
+          (identifier))
+        then: (integer)
+        else: (integer)))))
+
+===
+Pipe expression
+===
+
+def x(a : Int) : Int do
+  a |> f
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        type: (type_variable
+          (type_identifier))))
+    (return_type
+      (type_variable
+        (type_identifier)))
+    (do_block
+      (pipe_expression
+        left: (variable
+          (identifier))
+        right: (variable
+          (identifier))))))
+
+===
+Dot access
+===
+
+def x(p : Point) : Int do
+  p.x
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        type: (type_variable
+          (type_identifier))))
+    (return_type
+      (type_variable
+        (type_identifier)))
+    (do_block
+      (dot_expression
+        object: (variable
+          (identifier))
+        field: (identifier)))))
+
+===
+Hole expression
+===
+
+def x : a do
+  _
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (return_type
+      (variable
+        (identifier)))
+    (do_block
+      (hole))))
+
+===
+Arrow type in return position
+===
+
+def f : Int -> Int do
+  fn(x : Int) -> x end
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (return_type
+      (arrow_expression
+        domain: (type_variable
+          (type_identifier))
+        codomain: (type_variable
+          (type_identifier))))
+    (do_block
+      (lambda
+        (parameter_list
+          (parameter
+            name: (identifier)
+            type: (type_variable
+              (type_identifier))))
+        (variable
+          (identifier))))))
+
+===
+Unary negation
+===
+
+def x(n : Int) : Int do
+  -n
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        type: (type_variable
+          (type_identifier))))
+    (return_type
+      (type_variable
+        (type_identifier)))
+    (do_block
+      (unary_expression
+        (variable
+          (identifier))))))
+
+===
+Unary not
+===
+
+def x(b : Bool) : Bool do
+  not b
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        type: (type_variable
+          (type_identifier))))
+    (return_type
+      (type_variable
+        (type_identifier)))
+    (do_block
+      (unary_expression
+        (variable
+          (identifier))))))
+
+===
+Comparison operators
+===
+
+def x : Bool do
+  1 < 2 == true
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (return_type
+      (type_variable
+        (type_identifier)))
+    (do_block
+      (binary_expression
+        left: (binary_expression
+          left: (integer)
+          right: (integer))
+        right: (boolean)))))

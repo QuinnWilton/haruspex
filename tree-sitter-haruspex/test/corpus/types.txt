@@ -1,0 +1,150 @@
+===
+Simple type with nullary constructors
+===
+
+type Nat =
+  | zero
+  | succ(Nat)
+
+---
+
+(source_file
+  (type_declaration
+    name: (type_identifier)
+    (constructor
+      name: (identifier))
+    (constructor
+      name: (identifier)
+      (constructor_args
+        (type_variable
+          (type_identifier))))))
+
+===
+Parameterized type
+===
+
+type List(a : Type) =
+  | nil
+  | cons(a, List(a))
+
+---
+
+(source_file
+  (type_declaration
+    name: (type_identifier)
+    (type_parameter_list
+      (type_parameter
+        name: (identifier)
+        kind: (type_universe)))
+    (constructor
+      name: (identifier))
+    (constructor
+      name: (identifier)
+      (constructor_args
+        (variable
+          (identifier))
+        (application
+          function: (type_variable
+            (type_identifier))
+          argument: (variable
+            (identifier)))))))
+
+===
+Type with GADT return types
+===
+
+type Vec(n : Nat, a : Type) =
+  | vnil : Vec(zero, a)
+  | vcons(a, Vec(n, a)) : Vec(succ(n), a)
+
+---
+
+(source_file
+  (type_declaration
+    name: (type_identifier)
+    (type_parameter_list
+      (type_parameter
+        name: (identifier)
+        kind: (type_variable
+          (type_identifier)))
+      (type_parameter
+        name: (identifier)
+        kind: (type_universe)))
+    (constructor
+      name: (identifier)
+      (constructor_return_type
+        (application
+          function: (type_variable
+            (type_identifier))
+          argument: (variable
+            (identifier))
+          argument: (variable
+            (identifier)))))
+    (constructor
+      name: (identifier)
+      (constructor_args
+        (variable
+          (identifier))
+        (application
+          function: (type_variable
+            (type_identifier))
+          argument: (variable
+            (identifier))
+          argument: (variable
+            (identifier))))
+      (constructor_return_type
+        (application
+          function: (type_variable
+            (type_identifier))
+          argument: (application
+            function: (variable
+              (identifier))
+            argument: (variable
+              (identifier)))
+          argument: (variable
+            (identifier)))))))
+
+===
+Multiple type parameters
+===
+
+type Result(e : Type, a : Type) =
+  | err(e)
+  | ok(a)
+
+---
+
+(source_file
+  (type_declaration
+    name: (type_identifier)
+    (type_parameter_list
+      (type_parameter
+        name: (identifier)
+        kind: (type_universe))
+      (type_parameter
+        name: (identifier)
+        kind: (type_universe)))
+    (constructor
+      name: (identifier)
+      (constructor_args
+        (variable
+          (identifier))))
+    (constructor
+      name: (identifier)
+      (constructor_args
+        (variable
+          (identifier))))))
+
+===
+Type without leading pipe
+===
+
+type Bool = true | false
+
+---
+
+(source_file
+  (type_declaration
+    name: (type_identifier)
+    (constructor)
+    (constructor)))

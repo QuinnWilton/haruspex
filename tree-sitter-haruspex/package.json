@@ -1,0 +1,28 @@
+{
+  "name": "tree-sitter-haruspex",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Haruspex dependently typed language",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/beam-box/haruspex"
+  },
+  "license": "MIT",
+  "main": "bindings/node",
+  "keywords": [
+    "tree-sitter",
+    "haruspex",
+    "parser",
+    "syntax-highlighting"
+  ],
+  "dependencies": {
+    "nan": "^2.18.0"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.24.0"
+  },
+  "scripts": {
+    "build": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "parse": "tree-sitter parse"
+  }
+}

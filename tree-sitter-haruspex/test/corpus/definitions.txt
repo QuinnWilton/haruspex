@@ -1,0 +1,198 @@
+===
+Simple definition with body
+===
+
+def id(x : a) : a do
+  x
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        type: (variable (identifier))))
+    (return_type
+      (variable (identifier)))
+    (do_block
+      (variable (identifier)))))
+
+===
+Definition with multiple parameters
+===
+
+def add(n : Nat, m : Nat) : Nat do
+  n
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        type: (type_variable (type_identifier)))
+      (parameter
+        name: (identifier)
+        type: (type_variable (type_identifier))))
+    (return_type
+      (type_variable (type_identifier)))
+    (do_block
+      (variable (identifier)))))
+
+===
+Definition with implicit parameters
+===
+
+def vhead({a : Type}, {n : Nat}, v : Vec) : a do
+  v
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (parameter_list
+      (implicit_parameter
+        name: (identifier)
+        type: (type_universe))
+      (implicit_parameter
+        name: (identifier)
+        type: (type_variable (type_identifier)))
+      (parameter
+        name: (identifier)
+        type: (type_variable (type_identifier))))
+    (return_type
+      (variable (identifier)))
+    (do_block
+      (variable (identifier)))))
+
+===
+Definition with erased parameter
+===
+
+def vtail(0 n : Nat, v : Vec) : Vec do
+  v
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (parameter_list
+      (parameter
+        (multiplicity)
+        name: (identifier)
+        type: (type_variable (type_identifier)))
+      (parameter
+        name: (identifier)
+        type: (type_variable (type_identifier))))
+    (return_type
+      (type_variable (type_identifier)))
+    (do_block
+      (variable (identifier)))))
+
+===
+Annotated definition with @total
+===
+
+@total
+def add(n : Nat, m : Nat) : Nat do
+  n
+end
+
+---
+
+(source_file
+  (definition
+    (annotation)
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        type: (type_variable (type_identifier)))
+      (parameter
+        name: (identifier)
+        type: (type_variable (type_identifier))))
+    (return_type
+      (type_variable (type_identifier)))
+    (do_block
+      (variable (identifier)))))
+
+===
+Private definition
+===
+
+@private
+def helper(x : Int) : Int do
+  x
+end
+
+---
+
+(source_file
+  (definition
+    (annotation)
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        type: (type_variable (type_identifier))))
+    (return_type
+      (type_variable (type_identifier)))
+    (do_block
+      (variable (identifier)))))
+
+===
+Extern definition with body
+===
+
+@extern Kernel.div/2
+def safe_div(x : Int, y : Int) : Int do
+  x
+end
+
+---
+
+(source_file
+  (definition
+    (annotation
+      (extern_annotation
+        (extern_ref)))
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        type: (type_variable (type_identifier)))
+      (parameter
+        name: (identifier)
+        type: (type_variable (type_identifier))))
+    (return_type
+      (type_variable (type_identifier)))
+    (do_block
+      (variable (identifier)))))
+
+===
+Definition with no parameters
+===
+
+def unit : Unit do
+  unit
+end
+
+---
+
+(source_file
+  (definition
+    name: (identifier)
+    (return_type
+      (type_variable (type_identifier)))
+    (do_block
+      (variable (identifier)))))

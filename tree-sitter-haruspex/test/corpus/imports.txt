@@ -1,0 +1,46 @@
+===
+Simple import
+===
+
+import Data.Nat
+
+---
+
+(source_file
+  (import_declaration
+    (module_path
+      (type_identifier)
+      (type_identifier))))
+
+===
+Import with open
+===
+
+import Data.List, open: true
+
+---
+
+(source_file
+  (import_declaration
+    (module_path
+      (type_identifier)
+      (type_identifier))
+    (import_options)))
+
+===
+Import with selective open
+===
+
+import Data.Option, open: [some, none]
+
+---
+
+(source_file
+  (import_declaration
+    (module_path
+      (type_identifier)
+      (type_identifier))
+    (import_options
+      (import_name_list
+        (identifier)
+        (identifier)))))

@@ -1,0 +1,127 @@
+===
+@total annotation
+===
+
+@total
+def f(x : Nat) : Nat do
+  x
+end
+
+---
+
+(source_file
+  (definition
+    (annotation)
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        type: (type_variable (type_identifier))))
+    (return_type
+      (type_variable (type_identifier)))
+    (do_block
+      (variable (identifier)))))
+
+===
+@private annotation
+===
+
+@private
+def helper(x : Int) : Int do
+  x
+end
+
+---
+
+(source_file
+  (definition
+    (annotation)
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        type: (type_variable (type_identifier))))
+    (return_type
+      (type_variable (type_identifier)))
+    (do_block
+      (variable (identifier)))))
+
+===
+@extern annotation
+===
+
+@extern Kernel.div/2
+def div(x : Int, y : Int) : Int do
+  x
+end
+
+---
+
+(source_file
+  (definition
+    (annotation
+      (extern_annotation
+        (extern_ref)))
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        type: (type_variable (type_identifier)))
+      (parameter
+        name: (identifier)
+        type: (type_variable (type_identifier))))
+    (return_type
+      (type_variable (type_identifier)))
+    (do_block
+      (variable (identifier)))))
+
+===
+Multiple annotations
+===
+
+@total
+@private
+def secret(n : Nat) : Nat do
+  n
+end
+
+---
+
+(source_file
+  (definition
+    (annotation)
+    (annotation)
+    name: (identifier)
+    (parameter_list
+      (parameter
+        name: (identifier)
+        type: (type_variable (type_identifier))))
+    (return_type
+      (type_variable (type_identifier)))
+    (do_block
+      (variable (identifier)))))
+
+===
+@implicit declaration
+===
+
+@implicit {a : Type}
+
+---
+
+(source_file
+  (implicit_declaration
+    (implicit_parameter
+      name: (identifier)
+      type: (type_universe))))
+
+===
+@no_prelude declaration
+===
+
+@no_prelude
+
+---
+
+(source_file
+  (no_prelude))
