@@ -332,20 +332,113 @@ defmodule Haruspex.LSP do
     case Roux.Runtime.lookup(db, FileInfo, {uri}) do
       {:ok, file_info_id} ->
         type_decls = Roux.Runtime.field(db, FileInfo, file_info_id, :type_decls) || []
+        record_decls = Roux.Runtime.field(db, FileInfo, file_info_id, :record_decls) || []
+        class_decls = Roux.Runtime.field(db, FileInfo, file_info_id, :class_decls) || []
+        instance_decls = Roux.Runtime.field(db, FileInfo, file_info_id, :instance_decls) || []
 
-        Enum.map(type_decls, fn {:type_decl, span, name, _params, _ctors} ->
-          %{
-            name: Atom.to_string(name),
-            kind: :class,
-            range: span_to_range(source, span),
-            selection_range: span_to_range(source, span)
-          }
-        end)
+        type_symbols =
+          Enum.map(type_decls, fn {:type_decl, span, name, _params, ctors} ->
+            children =
+              Enum.map(ctors, fn
+                {:constructor, cspan, cname, _fields} ->
+                  %{
+                    name: Atom.to_string(cname),
+                    kind: :constant,
+                    range: span_to_range(source, cspan),
+                    selection_range: span_to_range(source, cspan)
+                  }
+
+                {:constructor, cspan, cname, _fields, _ret} ->
+                  %{
+                    name: Atom.to_string(cname),
+                    kind: :constant,
+                    range: span_to_range(source, cspan),
+                    selection_range: span_to_range(source, cspan)
+                  }
+              end)
+
+            %{
+              name: Atom.to_string(name),
+              kind: :class,
+              range: span_to_range(source, span),
+              selection_range: span_to_range(source, span),
+              children: children
+            }
+          end)
+
+        record_symbols =
+          Enum.map(record_decls, fn {:record_decl, span, name, _params, fields} ->
+            children =
+              Enum.map(fields, fn {:field, fspan, fname, _type} ->
+                %{
+                  name: Atom.to_string(fname),
+                  kind: :variable,
+                  range: span_to_range(source, fspan),
+                  selection_range: span_to_range(source, fspan)
+                }
+              end)
+
+            # SymbolKind 23 = Struct.
+            %{
+              name: Atom.to_string(name),
+              kind: 23,
+              range: span_to_range(source, span),
+              selection_range: span_to_range(source, span),
+              children: children
+            }
+          end)
+
+        class_symbols =
+          Enum.map(class_decls, fn
+            {_tag, span, name, _params, _constraints, methods} ->
+              children =
+                Enum.map(methods, fn {:method_sig, mspan, mname, _type} ->
+                  %{
+                    name: Atom.to_string(mname),
+                    kind: :function,
+                    range: span_to_range(source, mspan),
+                    selection_range: span_to_range(source, mspan)
+                  }
+                end)
+
+              # SymbolKind 11 = Interface.
+              %{
+                name: Atom.to_string(name),
+                kind: 11,
+                range: span_to_range(source, span),
+                selection_range: span_to_range(source, span),
+                children: children
+              }
+          end)
+
+        instance_symbols =
+          Enum.map(instance_decls, fn {:instance_decl, span, class_name, args, _constraints,
+                                       _defs} ->
+            args_str = Enum.map_join(args, ", ", &format_ast_name/1)
+
+            %{
+              name: "#{class_name}(#{args_str})",
+              kind: :class,
+              range: span_to_range(source, span),
+              selection_range: span_to_range(source, span)
+            }
+          end)
+
+        type_symbols ++ record_symbols ++ class_symbols ++ instance_symbols
 
       :error ->
         []
     end
   end
+
+  defp format_ast_name({:var, _, name}), do: Atom.to_string(name)
+  defp format_ast_name({:type_var, _, name}), do: Atom.to_string(name)
+
+  defp format_ast_name({:app, _, func, args}) do
+    "#{format_ast_name(func)}(#{Enum.map_join(args, ", ", &format_ast_name/1)})"
+  end
+
+  defp format_ast_name(_other), do: "_"
 
   # ============================================================================
   # Position mapping
