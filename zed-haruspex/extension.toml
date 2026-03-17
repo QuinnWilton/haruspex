@@ -1,4 +1,3 @@
-[extension]
 id = "haruspex"
 name = "Haruspex"
 description = "Haruspex language support"
@@ -9,5 +8,5 @@ repository = "https://github.com/quinnwilton/haruspex"
 
 [grammars.haruspex]
 repository = "https://github.com/quinnwilton/haruspex"
-rev = "d6ea0ff"
+rev = "99ecff1"
 path = "tree-sitter-haruspex"
