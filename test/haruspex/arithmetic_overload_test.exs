@@ -349,7 +349,9 @@ defmodule Haruspex.ArithmeticOverloadTest do
       """)
 
       {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/test.hx")
-      {:ok, {_type, _body}} = Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :my_add})
+
+      {:ok, {_type, _body}} =
+        Roux.Runtime.query(db, :haruspex_elaborate, {"lib/test.hx", :my_add})
     end
 
     test "x + y type-checks as Float via Num(Float)" do
@@ -362,7 +364,9 @@ defmodule Haruspex.ArithmeticOverloadTest do
       """)
 
       {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/test.hx")
-      {:ok, {_type, _body}} = Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :my_fadd})
+
+      {:ok, {_type, _body}} =
+        Roux.Runtime.query(db, :haruspex_elaborate, {"lib/test.hx", :my_fadd})
     end
   end
 end

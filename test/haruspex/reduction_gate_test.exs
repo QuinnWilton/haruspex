@@ -215,11 +215,11 @@ defmodule Haruspex.ReductionGateTest do
 
       # Check identity (which triggers collect_total_defs).
       {:ok, {_type, _body}} =
-        Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :identity})
+        Roux.Runtime.query(db, :haruspex_elaborate, {"lib/test.hx", :identity})
 
       # Check add too.
       {:ok, {_type, _body}} =
-        Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :add})
+        Roux.Runtime.query(db, :haruspex_elaborate, {"lib/test.hx", :add})
     end
   end
 
@@ -251,7 +251,7 @@ defmodule Haruspex.ReductionGateTest do
       {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/test.hx")
       # use_add references add (a same-file def) — should elaborate and check.
       {:ok, {_type, _body}} =
-        Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :use_add})
+        Roux.Runtime.query(db, :haruspex_elaborate, {"lib/test.hx", :use_add})
     end
 
     test "non-total same-file def reference stays opaque in types" do
@@ -271,7 +271,7 @@ defmodule Haruspex.ReductionGateTest do
       {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/test.hx")
       # mystery is not @total — stays opaque, but the function still checks fine.
       {:ok, {_type, _body}} =
-        Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :use_mystery})
+        Roux.Runtime.query(db, :haruspex_elaborate, {"lib/test.hx", :use_mystery})
     end
   end
 

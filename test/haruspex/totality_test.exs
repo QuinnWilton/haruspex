@@ -277,7 +277,7 @@ defmodule Haruspex.TotalityTest do
       """)
 
       {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/test.hx")
-      {:ok, {_type, _body}} = Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :add})
+      {:ok, {_type, _body}} = Roux.Runtime.query(db, :haruspex_elaborate, {"lib/test.hx", :add})
     end
 
     test "@total on non-structural recursion fails check" do
@@ -291,7 +291,7 @@ defmodule Haruspex.TotalityTest do
       """)
 
       {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/test.hx")
-      result = Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :loop})
+      result = Roux.Runtime.query(db, :haruspex_elaborate, {"lib/test.hx", :loop})
       assert {:error, {:no_decreasing_arg, :loop, nil}} = result
     end
 
@@ -306,7 +306,7 @@ defmodule Haruspex.TotalityTest do
 
       {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/test.hx")
       # Without @total, no totality check — type checking succeeds.
-      {:ok, {_type, _body}} = Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :loop})
+      {:ok, {_type, _body}} = Roux.Runtime.query(db, :haruspex_elaborate, {"lib/test.hx", :loop})
     end
 
     test "@total trivially total function passes" do
@@ -318,7 +318,7 @@ defmodule Haruspex.TotalityTest do
       """)
 
       {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/test.hx")
-      {:ok, _} = Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :id})
+      {:ok, _} = Roux.Runtime.query(db, :haruspex_elaborate, {"lib/test.hx", :id})
     end
   end
 

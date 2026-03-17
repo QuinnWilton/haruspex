@@ -323,14 +323,6 @@ defmodule Haruspex do
   end
 
   @doc """
-  Type-check a single definition. Delegates to `haruspex_elaborate` which
-  now performs both elaboration and checking in a unified pass.
-  """
-  defquery :haruspex_check, key: {uri, name} do
-    Roux.Runtime.query!(db, :haruspex_elaborate, {uri, name})
-  end
-
-  @doc """
   Compile all definitions in a file to an Elixir module AST.
   Returns `{:ok, Macro.t()}`.
   """
@@ -340,7 +332,7 @@ defmodule Haruspex do
     definitions =
       Enum.map(entity_ids, fn entity_id ->
         name = Roux.Runtime.field(db, Definition, entity_id, :name)
-        {:ok, {type_core, body_core}} = Roux.Runtime.query!(db, :haruspex_check, {uri, name})
+        {:ok, {type_core, body_core}} = Roux.Runtime.query!(db, :haruspex_elaborate, {uri, name})
         {name, type_core, body_core}
       end)
 
@@ -382,7 +374,7 @@ defmodule Haruspex do
         Enum.flat_map(entity_ids, fn entity_id ->
           name = Roux.Runtime.field(db, Definition, entity_id, :name)
 
-          case Roux.Runtime.query(db, :haruspex_check, {uri, name}) do
+          case Roux.Runtime.query(db, :haruspex_elaborate, {uri, name}) do
             {:ok, _} -> []
             {:error, reason} -> [error_to_diagnostic(reason)]
           end
@@ -401,7 +393,7 @@ defmodule Haruspex do
   # ============================================================================
 
   defquery :haruspex_totality, key: {uri, name} do
-    {:ok, {type_core, body_core}} = Roux.Runtime.query!(db, :haruspex_check, {uri, name})
+    {:ok, {type_core, body_core}} = Roux.Runtime.query!(db, :haruspex_elaborate, {uri, name})
 
     {:ok, {adts, _records, _classes, _instances}} =
       Roux.Runtime.query!(db, :haruspex_elaborate_types, uri)

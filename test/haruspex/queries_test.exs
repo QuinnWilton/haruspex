@@ -217,12 +217,12 @@ defmodule Haruspex.QueriesTest do
   # Check query
   # ============================================================================
 
-  describe "haruspex_check" do
+  describe "haruspex_elaborate (unified elaborate+check)" do
     test "returns checked terms and type", %{db: db} do
       set_source(db, "def add(x : Int, y : Int) : Int do x + y end\n")
 
       {:ok, {type_core, checked_body}} =
-        Roux.Runtime.query(db, :haruspex_check, {@uri, :add})
+        Roux.Runtime.query(db, :haruspex_elaborate, {@uri, :add})
 
       assert {:pi, :omega, {:builtin, :Int}, {:pi, :omega, {:builtin, :Int}, {:builtin, :Int}}} =
                type_core
@@ -233,7 +233,7 @@ defmodule Haruspex.QueriesTest do
     test "propagates elaborate error", %{db: db} do
       set_source(db, "def 123bad\n")
 
-      result = Roux.Runtime.query(db, :haruspex_check, {@uri, :add})
+      result = Roux.Runtime.query(db, :haruspex_elaborate, {@uri, :add})
       assert {:error, _} = result
     end
   end

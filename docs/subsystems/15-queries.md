@@ -43,11 +43,11 @@ definput :source_text, durability: :low
 # Parse source → create Definition entities, return definition names
 defquery :haruspex_parse, key: uri, returns: {:ok, [atom()]} | {:error, ...}
 
-# Elaborate surface AST → core terms (type and body)
-defquery :haruspex_elaborate, key: {uri, name}, returns: {:ok, {Core.term(), Core.term()}} | {:error, ...}
+# Elaborate surface AST → core terms (no type checking, used by collect_total_defs)
+defquery :haruspex_elaborate_core, key: {uri, name}, returns: {:ok, {Core.term(), Core.term(), MetaState.t()}} | {:error, ...}
 
-# Type check elaborated core
-defquery :haruspex_check, key: {uri, name}, returns: {:ok, Core.term(), Value.value()} | {:error, ...}
+# Unified elaborate + type check (the main per-definition query)
+defquery :haruspex_elaborate, key: {uri, name}, returns: {:ok, {Core.term(), Core.term()}} | {:error, ...}
 
 # Totality check — deferred to tier 7
 defquery :haruspex_totality, key: {uri, name}, returns: :ok | {:error, ...}
@@ -79,7 +79,7 @@ haruspex_parse ─────────────────────�
 haruspex_elaborate (per definition)           │
     │                                         │
     ▼                                         │
-haruspex_check (per definition)               │
+haruspex_elaborate (per definition)               │
     │                                         │
     ├─► haruspex_totality (if @total) [T7]    │
     │                                         │
@@ -89,28 +89,28 @@ haruspex_codegen ◄────────────────────
     ▼
 haruspex_compile
 
-haruspex_diagnostics ◄── haruspex_check, haruspex_totality
-haruspex_hover ◄── haruspex_check              [T10]
+haruspex_diagnostics ◄── haruspex_elaborate, haruspex_totality
+haruspex_hover ◄── haruspex_elaborate              [T10]
 haruspex_definition ◄── haruspex_parse         [T10]
-haruspex_completions ◄── haruspex_check        [T10]
+haruspex_completions ◄── haruspex_elaborate        [T10]
 ```
 
 ## Incrementality design
 
 Key insight: Definition entities with `[:uri, :name]` identity enable field-level early cutoff.
-- Changing a function's body but not its type → `haruspex_check` for that function re-runs, but dependents that only read the type are NOT invalidated
+- Changing a function's body but not its type → `haruspex_elaborate` for that function re-runs, but dependents that only read the type are NOT invalidated
 - Changing a type annotation → all dependents that read the type are invalidated
 - Adding/removing a definition → `haruspex_parse` returns a different name list, triggering re-elaboration of affected definitions
 
 ## Cross-module dependencies
 
-When a query in module A reads the type of a definition in module B (via `query(db, :haruspex_check, {b_uri, name})`), roux automatically records this as a dependency. No special mechanism is needed — the standard roux dependency tracking handles cross-module invalidation.
+When a query in module A reads the type of a definition in module B (via `query(db, :haruspex_elaborate, {b_uri, name})`), roux automatically records this as a dependency. No special mechanism is needed — the standard roux dependency tracking handles cross-module invalidation.
 
 This is deferred to tier 4 (module system), when imports and cross-module name resolution are implemented.
 
 ## `@total` body access during NbE
 
-When the evaluator needs to unfold a `@total` function during type checking, it calls `query(db, :haruspex_check, {uri, name})` to retrieve the checked body. This creates a roux dependency from the calling definition's check query to the `@total` definition's check query.
+When the evaluator needs to unfold a `@total` function during type checking, it calls `query(db, :haruspex_elaborate, {uri, name})` to retrieve the checked body. This creates a roux dependency from the calling definition's check query to the `@total` definition's check query.
 
 There is no circularity: a definition's check query produces its body; the evaluator only unfolds *other* definitions' bodies during NbE. Mutual recursion within a mutual group is handled by collecting all signatures first (tier 2 mutual), then checking bodies in sequence.
 
@@ -120,8 +120,8 @@ This is deferred to tier 7 (totality).
 
 Queries use `query!/3` for short-circuit error propagation:
 - If `haruspex_parse` fails, `haruspex_elaborate` is never called
-- If `haruspex_elaborate` fails for a definition, `haruspex_check` for that definition returns the error
-- `haruspex_diagnostics` collects errors from all definitions in the file by calling `haruspex_check` for each name returned by `haruspex_parse`, catching errors and converting them to diagnostics
+- If `haruspex_elaborate` fails for a definition, `haruspex_elaborate` for that definition returns the error
+- `haruspex_diagnostics` collects errors from all definitions in the file by calling `haruspex_elaborate` for each name returned by `haruspex_parse`, catching errors and converting them to diagnostics
 
 ## Implementation notes
 

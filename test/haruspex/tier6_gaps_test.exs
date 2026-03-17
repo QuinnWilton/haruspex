@@ -313,7 +313,7 @@ defmodule Haruspex.Tier6GapsTest do
       """)
 
       {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/test.hx")
-      {:ok, {_type, _body}} = Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :f})
+      {:ok, {_type, _body}} = Roux.Runtime.query(db, :haruspex_elaborate, {"lib/test.hx", :f})
     end
 
     test "add on Float passes instance validation" do
@@ -324,7 +324,7 @@ defmodule Haruspex.Tier6GapsTest do
       """)
 
       {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/test.hx")
-      {:ok, {_type, _body}} = Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :f})
+      {:ok, {_type, _body}} = Roux.Runtime.query(db, :haruspex_elaborate, {"lib/test.hx", :f})
     end
 
     test "add on String produces no_instance error" do
@@ -335,7 +335,7 @@ defmodule Haruspex.Tier6GapsTest do
       """)
 
       {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/test.hx")
-      result = Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :f})
+      result = Roux.Runtime.query(db, :haruspex_elaborate, {"lib/test.hx", :f})
       assert {:error, {:no_instance, :Num, {:vbuiltin, :String}}} = result
     end
 
@@ -347,7 +347,7 @@ defmodule Haruspex.Tier6GapsTest do
       """)
 
       {:ok, _} = Roux.Runtime.query(db, :haruspex_parse, "lib/test.hx")
-      {:ok, {_type, _body}} = Roux.Runtime.query(db, :haruspex_check, {"lib/test.hx", :f})
+      {:ok, {_type, _body}} = Roux.Runtime.query(db, :haruspex_elaborate, {"lib/test.hx", :f})
     end
   end
 end
