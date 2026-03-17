@@ -1,78 +1,12 @@
 defmodule Haruspex.GADTTest do
   use ExUnit.Case, async: true
 
+  import Haruspex.Test.GADTHelpers
+
   alias Haruspex.Check
   alias Haruspex.Context
   alias Haruspex.Pattern
   alias Haruspex.Unify.MetaState
-
-  # ============================================================================
-  # Helpers
-  # ============================================================================
-
-  defp nat_decl do
-    %{
-      name: :Nat,
-      params: [],
-      constructors: [
-        %{name: :zero, fields: [], return_type: {:data, :Nat, []}, span: nil},
-        %{name: :succ, fields: [{:data, :Nat, []}], return_type: {:data, :Nat, []}, span: nil}
-      ],
-      universe_level: {:llit, 0},
-      span: nil
-    }
-  end
-
-  defp vec_decl do
-    # type Vec(a : Type, n : Nat) =
-    #   vnil : Vec(a, zero)
-    #   | vcons(a, Vec(a, k)) : Vec(a, succ(k))
-    #
-    # de Bruijn indices in param scope: a = var 1, n = var 0
-    %{
-      name: :Vec,
-      params: [{:a, {:type, {:llit, 0}}}, {:n, {:data, :Nat, []}}],
-      constructors: [
-        %{
-          name: :vnil,
-          fields: [],
-          return_type: {:data, :Vec, [{:var, 1}, {:con, :Nat, :zero, []}]},
-          span: nil
-        },
-        %{
-          name: :vcons,
-          fields: [
-            {:var, 1},
-            {:data, :Vec, [{:var, 1}, {:var, 0}]}
-          ],
-          return_type: {:data, :Vec, [{:var, 1}, {:con, :Nat, :succ, [{:var, 0}]}]},
-          span: nil
-        }
-      ],
-      universe_level: {:llit, 0},
-      span: nil
-    }
-  end
-
-  defp adts do
-    %{Nat: nat_decl(), Vec: vec_decl()}
-  end
-
-  defp check_ctx do
-    %{Check.new() | adts: adts()}
-  end
-
-  defp extend(ctx, name, type, mult) do
-    %{ctx | context: Context.extend(ctx.context, name, type, mult), names: ctx.names ++ [name]}
-  end
-
-  # Shorthand for scrutinee types.
-  defp vec_type(elem_type, nat_index) do
-    {:vdata, :Vec, [elem_type, nat_index]}
-  end
-
-  defp vzero, do: {:vcon, :Nat, :zero, []}
-  defp vsucc(n), do: {:vcon, :Nat, :succ, [n]}
 
   # ============================================================================
   # GADT branch context — field type refinement

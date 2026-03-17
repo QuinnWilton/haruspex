@@ -1,78 +1,10 @@
 defmodule Haruspex.VecTest do
   use ExUnit.Case, async: true
 
+  import Haruspex.Test.GADTHelpers
+
   alias Haruspex.Check
-  alias Haruspex.Context
   alias Haruspex.Eval
-
-  # ============================================================================
-  # Helpers — ADT declarations
-  # ============================================================================
-
-  defp nat_decl do
-    %{
-      name: :Nat,
-      params: [],
-      constructors: [
-        %{name: :zero, fields: [], return_type: {:data, :Nat, []}, span: nil},
-        %{name: :succ, fields: [{:data, :Nat, []}], return_type: {:data, :Nat, []}, span: nil}
-      ],
-      universe_level: {:llit, 0},
-      span: nil
-    }
-  end
-
-  defp vec_decl do
-    %{
-      name: :Vec,
-      params: [{:a, {:type, {:llit, 0}}}, {:n, {:data, :Nat, []}}],
-      constructors: [
-        %{
-          name: :vnil,
-          fields: [],
-          return_type: {:data, :Vec, [{:var, 1}, {:con, :Nat, :zero, []}]},
-          span: nil
-        },
-        %{
-          name: :vcons,
-          fields: [
-            {:var, 1},
-            {:data, :Vec, [{:var, 1}, {:var, 0}]}
-          ],
-          return_type: {:data, :Vec, [{:var, 1}, {:con, :Nat, :succ, [{:var, 0}]}]},
-          span: nil
-        }
-      ],
-      universe_level: {:llit, 0},
-      span: nil
-    }
-  end
-
-  defp adts do
-    %{Nat: nat_decl(), Vec: vec_decl()}
-  end
-
-  defp check_ctx do
-    %{Check.new() | adts: adts()}
-  end
-
-  defp extend(ctx, name, type, mult) do
-    %{ctx | context: Context.extend(ctx.context, name, type, mult), names: ctx.names ++ [name]}
-  end
-
-  # ============================================================================
-  # Helpers — value constructors
-  # ============================================================================
-
-  defp vzero, do: {:vcon, :Nat, :zero, []}
-  defp vsucc(n), do: {:vcon, :Nat, :succ, [n]}
-  defp vec_type(a, n), do: {:vdata, :Vec, [a, n]}
-
-  # Core-level constructors for building terms.
-  defp czero, do: {:con, :Nat, :zero, []}
-  defp csucc(n), do: {:con, :Nat, :succ, [n]}
-  defp cvnil, do: {:con, :Vec, :vnil, []}
-  defp cvcons(x, rest), do: {:con, :Vec, :vcons, [x, rest]}
 
   # ============================================================================
   # Vec constructor typing
@@ -275,18 +207,7 @@ defmodule Haruspex.VecTest do
     end
   end
 
-  # ============================================================================
-  # Helpers — eval context
-  # ============================================================================
-
-  defp make_eval_ctx(ctx) do
-    solved =
-      ctx.meta_state.entries
-      |> Enum.filter(fn {_, entry} -> match?({:solved, _}, entry) end)
-      |> Map.new(fn {id, {:solved, val}} -> {id, {:solved, val}} end)
-
-    %{env: Context.env(ctx.context), metas: solved, defs: ctx.total_defs, fuel: ctx.fuel}
-  end
+  # make_eval_ctx/1 is imported from GADTHelpers.
 
   # ============================================================================
   # General vappend — the full dependent types showcase

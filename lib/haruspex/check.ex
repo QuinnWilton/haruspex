@@ -542,7 +542,7 @@ defmodule Haruspex.Check do
               # Use inner_ctx which has GADT metas in its meta_state.
               apply_index_equations(inner_ctx, expected, index_equations)
             else
-              eval_motive(ctx, motive_core, branch, scrut_val)
+              eval_motive(ctx, motive_core)
             end
 
           body = elem(branch, tuple_size(branch) - 1)
@@ -926,6 +926,16 @@ defmodule Haruspex.Check do
   # Case branch context extension
   # ============================================================================
 
+  # GADT Checking
+  #
+  # For each constructor branch, we create fresh metas for the ADT's type params
+  # and unify the constructor's return type against the (relaxed) scrutinee type.
+  # Neutral index args in the scrutinee are replaced with fresh metas so that
+  # unification can learn index equations (e.g., n = zero in a vnil branch).
+  # If unification fails, the branch is impossible and gets placeholder types.
+  # Solved index equations are threaded back to refine the expected type via
+  # substitution, allowing type-level computation to reduce in each branch.
+
   # Literal branch: 0 binders, no index equations.
   defp extend_branch_ctx(ctx, _scrut_type, {:__lit, value, _body}) do
     {ctx, {:__lit, value, nil}, []}
@@ -952,8 +962,17 @@ defmodule Haruspex.Check do
 
         {inner_ctx, {con_name, arity, nil}, index_equations}
 
-      _impossible_or_error ->
-        # Fallback to placeholder types (branch is unreachable or non-ADT scrutinee).
+      :impossible ->
+        # Branch is unreachable — placeholder types are safe since the body is dead code.
+        inner_ctx =
+          Enum.reduce(1..arity//1, ctx, fn _, c ->
+            extend_ctx(c, :_field, {:vtype, {:llit, 0}}, :omega)
+          end)
+
+        {inner_ctx, {con_name, arity, nil}, []}
+
+      :error ->
+        # Non-ADT scrutinee or unknown constructor — use placeholder types as fallback.
         inner_ctx =
           Enum.reduce(1..arity//1, ctx, fn _, c ->
             extend_ctx(c, :_field, {:vtype, {:llit, 0}}, :omega)
@@ -988,23 +1007,23 @@ defmodule Haruspex.Check do
 
       # Create fresh metas for each type parameter, evaluating kinds
       # incrementally under the partial env built so far.
-      {meta_vals, ms} =
+      {rev_meta_vals, ms} =
         Enum.reduce(decl.params, {[], ms}, fn {_name, kind_core}, {acc, ms} ->
-          param_env = Enum.reverse(acc)
-          eval_ctx = make_eval_ctx(%{ctx | meta_state: ms}, param_env)
+          # acc is already in de Bruijn env order (most recent at head).
+          eval_ctx = make_eval_ctx(%{ctx | meta_state: ms}, acc)
           kind_val = Eval.eval(eval_ctx, kind_core)
 
           {id, ms} = MetaState.fresh_meta(ms, kind_val, lvl, :gadt)
           meta_val = {:vneutral, kind_val, {:nmeta, id}}
 
-          {acc ++ [meta_val], ms}
+          {[meta_val | acc], ms}
         end)
 
-      # de Bruijn env: most recent binding at head.
-      param_env = Enum.reverse(meta_vals)
+      # de Bruijn env: most recent binding at head (rev_meta_vals is already in this order).
+      param_env = rev_meta_vals
 
       # Evaluate the constructor's return type under the fresh meta env.
-      return_type_core = con.return_type || default_return_type(decl)
+      return_type_core = con.return_type || Haruspex.ADT.default_return_type(decl)
       eval_ctx = make_eval_ctx(%{ctx | meta_state: ms}, param_env)
       return_type_val = Eval.eval(eval_ctx, return_type_core)
 
@@ -1045,25 +1064,19 @@ defmodule Haruspex.Check do
   # Replace neutral variable args in an ADT type with fresh metas.
   # Returns the relaxed type, a map of {nvar_level, meta_id}, and updated meta state.
   defp relax_neutral_indices({:vdata, type_name, type_args}, ms, lvl) do
-    {relaxed_args, index_meta_map, ms} =
+    {rev_relaxed_args, index_meta_map, ms} =
       Enum.reduce(type_args, {[], [], ms}, fn
         {:vneutral, type, {:nvar, var_level}}, {args, metas, ms} ->
           {id, ms} = MetaState.fresh_meta(ms, type, lvl, :gadt)
           meta_val = {:vneutral, type, {:nmeta, id}}
-          {args ++ [meta_val], [{var_level, id} | metas], ms}
+          {[meta_val | args], [{var_level, id} | metas], ms}
 
         arg, {args, metas, ms} ->
-          {args ++ [arg], metas, ms}
+          {[arg | args], metas, ms}
       end)
 
+    relaxed_args = Enum.reverse(rev_relaxed_args)
     {{:vdata, type_name, relaxed_args}, index_meta_map, ms}
-  end
-
-  # Default return type for non-GADT constructors: the fully-applied data type.
-  defp default_return_type(decl) do
-    n_params = length(decl.params)
-    args = Enum.map((n_params - 1)..0//-1, fn i -> {:var, i} end)
-    {:data, decl.name, args}
   end
 
   # Evaluate the motive at a particular branch to get the expected type.
@@ -1090,7 +1103,7 @@ defmodule Haruspex.Check do
     Eval.eval(eval_ctx, expected_core)
   end
 
-  defp eval_motive(ctx, motive_core, _branch, _scrut_val) do
+  defp eval_motive(ctx, motive_core) do
     # The motive core term has de Bruijn indices relative to the quoting level.
     # Evaluate under the full context env so free variables resolve correctly.
     eval_ctx = make_eval_ctx(ctx, Context.env(ctx.context))
@@ -1191,12 +1204,12 @@ defmodule Haruspex.Check do
   end
 
   defp make_eval_ctx(ctx, env) do
-    solved =
-      ctx.meta_state.entries
-      |> Enum.filter(fn {_, entry} -> match?({:solved, _}, entry) end)
-      |> Map.new(fn {id, {:solved, val}} -> {id, {:solved, val}} end)
-
-    %{env: env, metas: solved, defs: ctx.total_defs, fuel: ctx.fuel}
+    %{
+      env: env,
+      metas: MetaState.solved_entries(ctx.meta_state),
+      defs: ctx.total_defs,
+      fuel: ctx.fuel
+    }
   end
 
   defp pick_binder_name(ctx) do

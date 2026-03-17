@@ -122,22 +122,23 @@ defmodule Haruspex.Pattern do
   # for this scrutinee and can be excluded from the required set.
   defp constructor_possible?(con, decl, scrut_type, meta_state, lvl) do
     # Create fresh metas for each type parameter, evaluating kinds incrementally.
-    {meta_vals, temp_ms} =
+    {rev_meta_vals, temp_ms} =
       Enum.reduce(decl.params, {[], meta_state}, fn {_name, kind_core}, {acc, ms} ->
-        param_env = Enum.reverse(acc)
-        eval_ctx = %{env: param_env, metas: solved_metas(ms), defs: %{}, fuel: 1000}
+        # acc is already in de Bruijn env order (most recent at head).
+        eval_ctx = %{env: acc, metas: solved_metas(ms), defs: %{}, fuel: 1000}
         kind_val = Eval.eval(eval_ctx, kind_core)
 
         {id, ms} = MetaState.fresh_meta(ms, kind_val, lvl, :gadt)
         meta_val = {:vneutral, kind_val, {:nmeta, id}}
 
-        {acc ++ [meta_val], ms}
+        {[meta_val | acc], ms}
       end)
 
-    param_env = Enum.reverse(meta_vals)
+    # de Bruijn env: most recent binding at head (rev_meta_vals is already in this order).
+    param_env = rev_meta_vals
 
     # Compute return type (use default if not a GADT constructor).
-    return_type_core = con.return_type || default_con_return_type(decl)
+    return_type_core = con.return_type || Haruspex.ADT.default_return_type(decl)
 
     eval_ctx = %{env: param_env, metas: solved_metas(temp_ms), defs: %{}, fuel: 1000}
     return_type_val = Eval.eval(eval_ctx, return_type_core)
@@ -145,16 +146,8 @@ defmodule Haruspex.Pattern do
     match?({:ok, _}, Unify.unify(temp_ms, lvl, return_type_val, scrut_type))
   end
 
-  defp default_con_return_type(decl) do
-    n_params = length(decl.params)
-    args = Enum.map((n_params - 1)..0//-1, fn i -> {:var, i} end)
-    {:data, decl.name, args}
-  end
-
   defp solved_metas(ms) do
-    ms.entries
-    |> Enum.filter(fn {_, entry} -> match?({:solved, _}, entry) end)
-    |> Map.new(fn {id, {:solved, val}} -> {id, {:solved, val}} end)
+    MetaState.solved_entries(ms)
   end
 
   # ============================================================================
@@ -197,7 +190,7 @@ defmodule Haruspex.Pattern do
   # Walk a core term, replacing occurrences of `target` with {:var, 0}
   # (shifted appropriately under binders).
   defp abstract_core(term, target, ms, lvl) do
-    if core_convertible?(term, target, ms, lvl) do
+    if core_convertible?(term, target) do
       {:var, 0}
     else
       abstract_subterms(term, target, ms, lvl)
@@ -283,7 +276,7 @@ defmodule Haruspex.Pattern do
   # For a more precise check, we could evaluate both and use NbE conversion,
   # but syntactic equality is sufficient for the common case where the
   # scrutinee appears literally in the goal type.
-  defp core_convertible?(term, target, _ms, _lvl) do
+  defp core_convertible?(term, target) do
     term == target
   end
 end

@@ -130,6 +130,12 @@ defmodule Haruspex.Unify.MetaState do
   # Level constraints
   # ============================================================================
 
+  @doc "Return only the solved entries as a map of {id => {:solved, value}}."
+  @spec solved_entries(t()) :: %{Core.meta_id() => {:solved, Value.value()}}
+  def solved_entries(%__MODULE__{} = state) do
+    Map.filter(state.entries, fn {_, entry} -> match?({:solved, _}, entry) end)
+  end
+
   @doc """
   Add a level constraint to the state.
   """

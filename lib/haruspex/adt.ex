@@ -149,6 +149,18 @@ defmodule Haruspex.ADT do
   end
 
   # ============================================================================
+  # Default return type
+  # ============================================================================
+
+  @doc "Default return type for non-GADT constructors: the data type applied to its param variables."
+  @spec default_return_type(adt_decl()) :: Core.expr()
+  def default_return_type(decl) do
+    n_params = length(decl.params)
+    args = Enum.map((n_params - 1)..0//-1, fn i -> {:var, i} end)
+    {:data, decl.name, args}
+  end
+
+  # ============================================================================
   # Constructor type computation
   # ============================================================================
 
@@ -161,10 +173,9 @@ defmodule Haruspex.ADT do
   @spec constructor_type(adt_decl(), atom()) :: Core.expr()
   def constructor_type(decl, con_name) do
     con = Enum.find(decl.constructors, &(&1.name == con_name))
-    n_params = length(decl.params)
     n_fields = length(con.fields)
 
-    # Both fields and return_type are stored in the param scope (indices 0..n_params-1).
+    # Both fields and return_type are stored in the param scope.
     # Build the Pi chain field_0 -> field_1 -> ... -> return_type where each term
     # is shifted appropriately to account for the field binders it appears under.
     #
@@ -174,13 +185,8 @@ defmodule Haruspex.ADT do
     return_type =
       case con.return_type do
         nil ->
-          # Default: params as vars, already shifted past field binders.
-          args =
-            Enum.map((n_params - 1)..0//-1, fn i ->
-              {:var, n_fields + i}
-            end)
-
-          {:data, decl.name, args}
+          # Default: params as vars, shifted past field binders.
+          Core.shift(default_return_type(decl), n_fields, 0)
 
         rt ->
           Core.shift(rt, n_fields, 0)
