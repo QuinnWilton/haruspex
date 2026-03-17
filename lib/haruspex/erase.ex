@@ -20,12 +20,17 @@ defmodule Haruspex.Erase do
   """
 
   alias Haruspex.Core
+  alias Haruspex.Eval
+  alias Haruspex.Quote
+  alias Haruspex.Value
 
   @type context :: %__MODULE__{
-          types: [Core.expr()]
+          types: [Core.expr()],
+          env: Value.env(),
+          level: non_neg_integer()
         }
 
-  defstruct types: []
+  defstruct types: [], env: [], level: 0
 
   # ============================================================================
   # Public API
@@ -49,6 +54,8 @@ defmodule Haruspex.Erase do
   """
   @spec erase(Core.expr(), Core.expr(), context()) :: Core.expr()
   def erase(term, type, %__MODULE__{} = ctx) do
+    # Ensure env and level match the types stack.
+    ctx = ensure_env(ctx)
     check(term, type, ctx)
   end
 
@@ -105,7 +112,7 @@ defmodule Haruspex.Erase do
   # Pair: erase both components with their Sigma types.
   defp check({:pair, a, b}, {:sigma, a_type, b_type}, ctx) do
     erased_a = check(a, a_type, ctx)
-    {:pair, erased_a, check(b, Core.subst(b_type, 0, a), ctx)}
+    {:pair, erased_a, check(b, eval_cod(ctx, b_type, a), ctx)}
   end
 
   # Projections: synthesize the pair's type.
@@ -175,13 +182,11 @@ defmodule Haruspex.Erase do
 
     case f_type do
       {:pi, :zero, _dom, cod} ->
-        result_type = Core.subst(cod, 0, a)
-        {erased_f, result_type}
+        {erased_f, eval_cod(ctx, cod, a)}
 
       {:pi, :omega, dom, cod} ->
         erased_a = check(a, dom, ctx)
-        result_type = Core.subst(cod, 0, a)
-        {{:app, erased_f, erased_a}, result_type}
+        {{:app, erased_f, erased_a}, eval_cod(ctx, cod, a)}
     end
   end
 
@@ -251,7 +256,7 @@ defmodule Haruspex.Erase do
 
     case e_type do
       {:sigma, _a_type, b_type} ->
-        {{:snd, erased_e}, Core.subst(b_type, 0, {:fst, e})}
+        {{:snd, erased_e}, eval_cod(ctx, b_type, {:fst, e})}
     end
   end
 
@@ -334,8 +339,34 @@ defmodule Haruspex.Erase do
     erased
   end
 
-  defp push(%__MODULE__{types: types} = ctx, type) do
-    %{ctx | types: [type | types]}
+  # Build env from types if not already populated (for backward compat with
+  # callers that only provide types).
+  defp ensure_env(%__MODULE__{types: types, env: env} = ctx) when length(env) < length(types) do
+    n = length(types)
+
+    env =
+      Enum.reduce((n - 1)..0//-1, [], fn i, acc ->
+        [Value.fresh_var(i, {:vtype, {:llit, 0}}) | acc]
+      end)
+
+    %{ctx | env: Enum.reverse(env), level: n}
+  end
+
+  defp ensure_env(ctx), do: ctx
+
+  # Compute a result type by evaluating a codomain under the env with an
+  # argument value, then quoting back to a core term. This replaces
+  # Core.subst(cod, 0, arg) with proper NbE evaluation so type-level
+  # functions reduce during erasure.
+  defp eval_cod(ctx, cod, arg_core) do
+    arg_val = Eval.eval(Eval.default_ctx(ctx.env), arg_core)
+    cod_val = Eval.eval(Eval.default_ctx([arg_val | ctx.env]), cod)
+    Quote.quote_untyped(ctx.level, cod_val)
+  end
+
+  defp push(%__MODULE__{types: types, env: env, level: lvl} = ctx, type) do
+    fresh = Value.fresh_var(lvl, {:vtype, {:llit, 0}})
+    %{ctx | types: [type | types], env: [fresh | env], level: lvl + 1}
   end
 
   # A type is type-level if it inhabits a universe.

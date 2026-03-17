@@ -1,6 +1,6 @@
 # Fix: erasure should use eval+quote instead of syntactic subst
 
-**Priority**: medium — misclassifies dependent types under substitution
+**Priority**: low — theoretical issue; syntactic subst preserves Pi structure in practice
 
 ## Problem
 
