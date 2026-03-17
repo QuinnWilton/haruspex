@@ -514,17 +514,12 @@ defmodule Haruspex.Check do
     end
   end
 
-  # Case expression against a known expected type: use goal type abstraction
-  # to enable dependent type refinement in branches.
+  # Case expression against a known expected type.
+  # For GADT branches, index equations refine the expected type per branch
+  # so that type-level functions (e.g., add) can reduce.
   def check(ctx, {:case, scrutinee, branches}, expected) do
     with {:ok, scrut_term, scrut_type, ctx} <- synth(ctx, scrutinee) do
       forced_scrut_type = Eval.whnf(make_eval_ctx(ctx, []), scrut_type)
-      scrut_val = eval_in(ctx, scrut_term)
-      lvl = Context.level(ctx.context)
-
-      # Abstract the scrutinee out of the expected type to build a motive.
-      {:ok, motive_core} =
-        Haruspex.Pattern.abstract_over(scrut_val, expected, ctx.meta_state, lvl)
 
       # Type check each branch with refined expected types.
       {checked_branches, ctx} =
@@ -532,16 +527,14 @@ defmodule Haruspex.Check do
           {inner_ctx, branch_head, index_equations} =
             extend_branch_ctx(ctx, forced_scrut_type, branch)
 
-          # Compute the branch-specific expected type. For GADT branches with
-          # index equations (e.g., n = zero in vnil), substitute the learned
-          # equalities into the expected type so type-level functions reduce.
-          # For non-GADT branches, use the standard motive evaluation.
+          # For GADT branches with index equations (e.g., n = zero in vnil),
+          # substitute the learned equalities into the expected type so
+          # type-level functions reduce. Otherwise use the expected type as-is.
           branch_expected =
             if index_equations != [] do
-              # Use inner_ctx which has GADT metas in its meta_state.
               apply_index_equations(inner_ctx, expected, index_equations)
             else
-              eval_motive(ctx, motive_core)
+              expected
             end
 
           body = elem(branch, tuple_size(branch) - 1)
@@ -1083,13 +1076,9 @@ defmodule Haruspex.Check do
     {{:vdata, type_name, relaxed_args}, index_meta_map, ms}
   end
 
-  # Evaluate the motive at a particular branch to get the expected type.
-  # The motive is a core term where {:var, 0} stands for the scrutinee.
-  # We substitute the scrutinee value back (since for non-dependent cases
-  # the motive is just the expected type with no var 0 references).
-  # Apply GADT index equations to the expected type. Quotes the expected value,
-  # evaluates it under a modified env where neutral vars are replaced by the
-  # values learned from GADT unification. This allows type-level functions
+  # Apply GADT index equations to the expected type. Quotes the expected value
+  # and evaluates it under a modified env where neutral vars are replaced by
+  # the values learned from GADT unification. This allows type-level functions
   # like add(n, m) to reduce when n is known (e.g., n = zero in vnil branch).
   defp apply_index_equations(ctx, expected, index_equations) do
     lvl = Context.level(ctx.context)
@@ -1105,13 +1094,6 @@ defmodule Haruspex.Check do
 
     eval_ctx = make_eval_ctx(ctx, modified_env)
     Eval.eval(eval_ctx, expected_core)
-  end
-
-  defp eval_motive(ctx, motive_core) do
-    # The motive core term has de Bruijn indices relative to the quoting level.
-    # Evaluate under the full context env so free variables resolve correctly.
-    eval_ctx = make_eval_ctx(ctx, Context.env(ctx.context))
-    Eval.eval(eval_ctx, motive_core)
   end
 
   # ============================================================================
