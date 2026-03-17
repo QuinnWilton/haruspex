@@ -218,15 +218,48 @@ defmodule Haruspex.Unify do
 
   defp occurs_in_neutral?(ms, meta_id, ne) do
     case ne do
-      {:nmeta, id} -> id == meta_id
-      {:nvar, _} -> false
-      {:napp, head, arg} -> occurs_in_neutral?(ms, meta_id, head) or occurs_in?(ms, meta_id, arg)
-      {:nfst, head} -> occurs_in_neutral?(ms, meta_id, head)
-      {:nsnd, head} -> occurs_in_neutral?(ms, meta_id, head)
-      {:ndef, _, args} -> Enum.any?(args, &occurs_in?(ms, meta_id, &1))
-      {:nbuiltin, _} -> false
-      {:ndef_ref, _} -> false
-      {:ncase, head, _closures} -> occurs_in_neutral?(ms, meta_id, head)
+      {:nmeta, id} ->
+        id == meta_id
+
+      {:nvar, _} ->
+        false
+
+      {:napp, head, arg} ->
+        occurs_in_neutral?(ms, meta_id, head) or occurs_in?(ms, meta_id, arg)
+
+      {:nfst, head} ->
+        occurs_in_neutral?(ms, meta_id, head)
+
+      {:nsnd, head} ->
+        occurs_in_neutral?(ms, meta_id, head)
+
+      {:ndef, _, args} ->
+        Enum.any?(args, &occurs_in?(ms, meta_id, &1))
+
+      {:nbuiltin, _} ->
+        false
+
+      {:ndef_ref, _} ->
+        false
+
+      {:ncase, head, closures} ->
+        occurs_in_neutral?(ms, meta_id, head) or
+          Enum.any?(closures, fn
+            {:__lit, _value, {env, body}} ->
+              occurs_in_closure?(ms, meta_id, env, body)
+
+            {_con, arity, {env, body}} ->
+              # Open closure with fresh vars for the constructor fields.
+              lvl = length(env)
+
+              fresh_env =
+                Enum.reduce(0..(arity - 1)//1, env, fn i, e ->
+                  [Value.fresh_var(lvl + i, {:vtype, {:llit, 0}}) | e]
+                end)
+
+              body_val = Eval.eval(eval_ctx(ms, fresh_env), body)
+              occurs_in?(ms, meta_id, body_val)
+          end)
     end
   end
 
@@ -314,8 +347,24 @@ defmodule Haruspex.Unify do
       {:ndef_ref, _} ->
         true
 
-      {:ncase, head, _closures} ->
-        scope_ok_neutral?(head, allowed_levels)
+      {:ncase, head, closures} ->
+        scope_ok_neutral?(head, allowed_levels) and
+          Enum.all?(closures, fn
+            {:__lit, _value, {env, body}} ->
+              scope_ok_closure?(env, body, allowed_levels)
+
+            {_con, arity, {env, body}} ->
+              lvl = length(env)
+
+              fresh_env =
+                Enum.reduce(0..(arity - 1)//1, env, fn i, e ->
+                  [Value.fresh_var(lvl + i, {:vtype, {:llit, 0}}) | e]
+                end)
+
+              body_val = Eval.eval(%{Eval.default_ctx() | env: fresh_env}, body)
+              new_levels = Enum.to_list(lvl..(lvl + arity - 1)//1) ++ allowed_levels
+              scope_ok?(body_val, new_levels)
+          end)
     end
   end
 
