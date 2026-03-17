@@ -542,6 +542,45 @@ defmodule Haruspex.PredicateTest do
   end
 
   # ============================================================================
+  # Integration tests from spec
+  # ============================================================================
+
+  describe "integration: safe_div" do
+    test "y : {y : Int | y != 0} passes non-zero check" do
+      ctx = Check.new()
+      refined_int = {:vrefine, {:vbuiltin, :Int}, :y, {:neq, {:var, :y}, {:lit, 0}}}
+      ctx = extend(ctx, :x, {:vbuiltin, :Int}, :omega)
+      ctx = extend(ctx, :y, refined_int, :omega)
+
+      # Checking y (var 0) against {z : Int | z != 0} should pass because
+      # y already has the refinement in its type.
+      refined_target = {:vrefine, {:vbuiltin, :Int}, :z, {:neq, {:var, :z}, {:lit, 0}}}
+      {:ok, _term, _ctx} = Check.check(ctx, {:var, 0}, refined_target)
+    end
+  end
+
+  describe "integration: positive integer" do
+    test "literal 5 passes {n : Int | n > 0}" do
+      ctx = Check.new()
+      refined = {:vrefine, {:vbuiltin, :Int}, :n, {:gt, {:var, :n}, {:lit, 0}}}
+      {:ok, _term, _ctx} = Check.check(ctx, {:lit, 5}, refined)
+    end
+
+    test "literal 0 fails {n : Int | n > 0}" do
+      ctx = Check.new()
+      refined = {:vrefine, {:vbuiltin, :Int}, :n, {:gt, {:var, :n}, {:lit, 0}}}
+      assert {:error, {:refinement_failed, _, _}} = Check.check(ctx, {:lit, 0}, refined)
+    end
+
+    test "unconstrained variable fails {n : Int | n > 0}" do
+      ctx = Check.new()
+      ctx = extend(ctx, :x, {:vbuiltin, :Int}, :omega)
+      refined = {:vrefine, {:vbuiltin, :Int}, :n, {:gt, {:var, :n}, {:lit, 0}}}
+      assert {:error, {:refinement_failed, _, _}} = Check.check(ctx, {:var, 0}, refined)
+    end
+  end
+
+  # ============================================================================
   # Helpers
   # ============================================================================
 
