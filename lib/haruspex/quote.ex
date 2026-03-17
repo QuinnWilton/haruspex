@@ -241,16 +241,16 @@ defmodule Haruspex.Quote do
     {:def_ref, name}
   end
 
-  defp quote_neutral(lvl, {:ncase, ne, branches, env}) do
+  defp quote_neutral(lvl, {:ncase, ne, closures}) do
     {:case, quote_neutral(lvl, ne),
-     Enum.map(branches, fn
-       {:__lit, value, body} ->
+     Enum.map(closures, fn
+       {:__lit, value, {env, body}} ->
          body_val = Eval.eval(%{Eval.default_ctx() | env: env}, body)
          {:__lit, value, quote_untyped(lvl, body_val)}
 
-       {con_name, arity, body} ->
-         # Create fresh vars for the constructor field bindings, reversed
-         # to match the vcase env layout (last field at index 0).
+       {con_name, arity, {env, body}} ->
+         # Open the closure with fresh vars for the constructor field bindings,
+         # reversed to match the vcase env layout (last field at index 0).
          fresh_vars =
            for i <- 0..(arity - 1)//1, do: Value.fresh_var(lvl + i, {:vtype, {:llit, 0}})
 

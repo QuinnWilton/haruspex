@@ -384,7 +384,7 @@ defmodule Haruspex.QuoteTest do
   describe "quote — neutral case with __lit branch" do
     test "ncase with __lit branch is read back" do
       int = {:vbuiltin, :Int}
-      ne = {:ncase, {:nvar, 0}, [{:__lit, 42, {:lit, 1}}, {:Foo, 1, {:var, 0}}], []}
+      ne = {:ncase, {:nvar, 0}, [{:__lit, 42, {[], {:lit, 1}}}, {:Foo, 1, {[], {:var, 0}}}]}
       val = {:vneutral, int, ne}
       result = Quote.quote(1, int, val)
       assert {:case, {:var, 0}, [{:__lit, 42, {:lit, 1}}, {:Foo, 1, {:var, 0}}]} = result

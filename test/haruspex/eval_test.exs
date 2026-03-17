@@ -440,7 +440,9 @@ defmodule Haruspex.EvalTest do
       branches = [{:Zero, 0, {:lit, 0}}, {:Succ, 1, {:var, 0}}]
 
       result = Eval.vcase(c, ne_val, branches)
-      assert {:vneutral, ^int, {:ncase, {:nvar, 0}, ^branches, []}} = result
+      # Branches are wrapped as closures with the current env.
+      expected_closures = [{:Zero, 0, {[], {:lit, 0}}}, {:Succ, 1, {[], {:var, 0}}}]
+      assert {:vneutral, ^int, {:ncase, {:nvar, 0}, ^expected_closures}} = result
     end
   end
 
@@ -553,17 +555,17 @@ defmodule Haruspex.EvalTest do
       {_, ms} = MetaState.fresh_meta(ms, {:vdata, :Nat, []}, 0, :implicit)
 
       # Build stuck case: case ?0 of zero -> 1; succ(_) -> 2
-      branches = [
-        {:zero, 0, {:lit, 1}},
-        {:succ, 1, {:lit, 2}}
+      closures = [
+        {:zero, 0, {[], {:lit, 1}}},
+        {:succ, 1, {[], {:lit, 2}}}
       ]
 
       stuck =
-        {:vneutral, {:vbuiltin, :Int}, {:ncase, {:nmeta, 0}, branches, []}}
+        {:vneutral, {:vbuiltin, :Int}, {:ncase, {:nmeta, 0}, closures}}
 
       # Before solving: stays stuck.
       c_unsolved = %{ctx() | metas: ms.entries}
-      assert {:vneutral, _, {:ncase, _, _, _}} = Eval.whnf(c_unsolved, stuck)
+      assert {:vneutral, _, {:ncase, _, _}} = Eval.whnf(c_unsolved, stuck)
 
       # Solve ?0 to zero, then whnf reduces the case.
       {:ok, ms} = MetaState.solve(ms, 0, {:vcon, :Nat, :zero, []})

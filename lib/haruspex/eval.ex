@@ -215,7 +215,14 @@ defmodule Haruspex.Eval do
   end
 
   def vcase(ctx, {:vneutral, type, ne}, branches) do
-    {:vneutral, type, {:ncase, ne, branches, ctx.env}}
+    # Store per-branch closures: each branch captures the current env.
+    closures =
+      Enum.map(branches, fn
+        {:__lit, value, body} -> {:__lit, value, {ctx.env, body}}
+        {con_name, arity, body} -> {con_name, arity, {ctx.env, body}}
+      end)
+
+    {:vneutral, type, {:ncase, ne, closures}}
   end
 
   defp find_constructor_branch(branches, con_name) do
@@ -461,6 +468,24 @@ defmodule Haruspex.Eval do
 
   # Evaluate a closure body with a single argument prepended to the captured env.
   # Used for computing codomain types in Pi/Sigma applications.
+  # Extract the env and plain branches from ncase closures.
+  defp unwrap_closures(closures) do
+    env =
+      case closures do
+        [{_, _, {e, _}} | _] -> e
+        [{_, _, _, {e, _}} | _] -> e
+        _ -> []
+      end
+
+    branches =
+      Enum.map(closures, fn
+        {:__lit, value, {_env, body}} -> {:__lit, value, body}
+        {con_name, arity, {_env, body}} -> {con_name, arity, body}
+      end)
+
+    {env, branches}
+  end
+
   defp do_eval_in_env(env, body, arg) do
     eval(%{env: [arg | env], metas: %{}, defs: %{}, fuel: @default_fuel}, body)
   end
@@ -514,10 +539,13 @@ defmodule Haruspex.Eval do
   end
 
   # Stuck case: if the scrutinee is now a constructor, re-reduce.
-  defp whnf_neutral(ctx, {:ncase, ne, branches, case_env}) do
+  defp whnf_neutral(ctx, {:ncase, ne, closures}) do
     case whnf_neutral(ctx, ne) do
       {:reduced, scrut_val} ->
-        {:reduced, vcase(%{ctx | env: case_env}, scrut_val, branches)}
+        # Unwrap closures back to plain branches for vcase, using the
+        # first closure's env as the evaluation env.
+        {env, branches} = unwrap_closures(closures)
+        {:reduced, vcase(%{ctx | env: env}, scrut_val, branches)}
 
       :stuck ->
         :stuck

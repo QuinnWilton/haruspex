@@ -319,7 +319,8 @@ defmodule Haruspex.WithTest do
       scrut = {:vbuiltin, :Int}
       # Goal contains a case with Int as the scrutinee.
       goal =
-        {:vneutral, {:vtype, {:llit, 0}}, {:ncase, {:nbuiltin, :Int}, [{:_, 0, {:lit, 42}}], []}}
+        {:vneutral, {:vtype, {:llit, 0}},
+         {:ncase, {:nbuiltin, :Int}, [{:_, 0, {[], {:lit, 42}}}]}}
 
       ms = Haruspex.Unify.MetaState.new()
 

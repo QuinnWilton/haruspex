@@ -1667,7 +1667,7 @@ defmodule Haruspex.UnifyTest do
 
       # Build a neutral case: case ?0(x) of ... — the head contains the meta.
       meta_app = {:napp, {:nmeta, id}, x}
-      ncase_ne = {:ncase, meta_app, [{:Just, 1, {:var, 0}}], []}
+      ncase_ne = {:ncase, meta_app, [{:Just, 1, {[], {:var, 0}}}]}
 
       # ?0(x) vs vneutral wrapping ncase with ?0(x) as head.
       flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
@@ -1684,7 +1684,7 @@ defmodule Haruspex.UnifyTest do
       x = Value.fresh_var(0, int)
 
       # Build ncase with head = nvar(0), which is in the spine.
-      ncase_ne = {:ncase, {:nvar, 0}, [{:Just, 1, {:var, 0}}], []}
+      ncase_ne = {:ncase, {:nvar, 0}, [{:Just, 1, {[], {:var, 0}}}]}
 
       flex = {:vneutral, int, {:napp, {:nmeta, id}, x}}
       rhs = {:vneutral, int, ncase_ne}
@@ -1710,7 +1710,7 @@ defmodule Haruspex.UnifyTest do
       # The __lit body contains a var that will be renamed.
       # The env must contain the value for var(0) since quote_neutral
       # evaluates branch bodies under the captured env.
-      ncase_ne = {:ncase, {:nvar, 0}, [{:__lit, true, {:var, 0}}], [x]}
+      ncase_ne = {:ncase, {:nvar, 0}, [{:__lit, true, {[x], {:var, 0}}}]}
       rhs = {:vneutral, int, ncase_ne}
 
       assert {:ok, ms} = Unify.unify(ms, 1, flex, rhs)
@@ -1946,7 +1946,7 @@ defmodule Haruspex.UnifyTest do
 
       # Build a neutral case with a constructor branch (arity > 0).
       # The body references variables that need renaming.
-      ncase_ne = {:ncase, {:nvar, 0}, [{:Just, 1, {:var, 0}}], [x]}
+      ncase_ne = {:ncase, {:nvar, 0}, [{:Just, 1, {[x], {:var, 0}}}]}
       rhs = {:vneutral, int, ncase_ne}
 
       assert {:ok, ms} = Unify.unify(ms, 1, flex, rhs)
@@ -1996,10 +1996,11 @@ defmodule Haruspex.UnifyTest do
       ms = MetaState.new()
       nat = {:vdata, :Nat, []}
 
-      # Two stuck cases: case nvar(0) of ... with different captured envs.
-      branches = [{:zero, 0, {:lit, 1}}, {:succ, 1, {:lit, 2}}]
-      ne1 = {:ncase, {:nvar, 0}, branches, [:env_a]}
-      ne2 = {:ncase, {:nvar, 0}, branches, [:env_b]}
+      # Two stuck cases with different captured envs in closures.
+      closures_a = [{:zero, 0, {[:env_a], {:lit, 1}}}, {:succ, 1, {[:env_a], {:lit, 2}}}]
+      closures_b = [{:zero, 0, {[:env_b], {:lit, 1}}}, {:succ, 1, {[:env_b], {:lit, 2}}}]
+      ne1 = {:ncase, {:nvar, 0}, closures_a}
+      ne2 = {:ncase, {:nvar, 0}, closures_b}
 
       lhs = {:vneutral, nat, ne1}
       rhs = {:vneutral, nat, ne2}
@@ -2011,9 +2012,9 @@ defmodule Haruspex.UnifyTest do
       ms = MetaState.new()
       nat = {:vdata, :Nat, []}
 
-      branches = [{:zero, 0, {:lit, 1}}, {:succ, 1, {:lit, 2}}]
-      ne1 = {:ncase, {:nvar, 0}, branches, []}
-      ne2 = {:ncase, {:nvar, 1}, branches, []}
+      closures = [{:zero, 0, {[], {:lit, 1}}}, {:succ, 1, {[], {:lit, 2}}}]
+      ne1 = {:ncase, {:nvar, 0}, closures}
+      ne2 = {:ncase, {:nvar, 1}, closures}
 
       lhs = {:vneutral, nat, ne1}
       rhs = {:vneutral, nat, ne2}
@@ -2027,9 +2028,10 @@ defmodule Haruspex.UnifyTest do
       {_id, _meta, ms} = make_meta(ms, nat, 2)
 
       # Both stuck on the same unsolved meta — should be equal.
-      branches = [{:zero, 0, {:lit, 1}}, {:succ, 1, {:lit, 2}}]
-      ne1 = {:ncase, {:nmeta, 0}, branches, [:env_a]}
-      ne2 = {:ncase, {:nmeta, 0}, branches, [:env_b]}
+      closures_a = [{:zero, 0, {[:env_a], {:lit, 1}}}, {:succ, 1, {[:env_a], {:lit, 2}}}]
+      closures_b = [{:zero, 0, {[:env_b], {:lit, 1}}}, {:succ, 1, {[:env_b], {:lit, 2}}}]
+      ne1 = {:ncase, {:nmeta, 0}, closures_a}
+      ne2 = {:ncase, {:nmeta, 0}, closures_b}
 
       lhs = {:vneutral, nat, ne1}
       rhs = {:vneutral, nat, ne2}

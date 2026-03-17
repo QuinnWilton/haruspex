@@ -40,7 +40,7 @@ defmodule Haruspex.Value do
           | {:ndef, atom(), [value()]}
           | {:nbuiltin, atom()}
           | {:ndef_ref, atom()}
-          | {:ncase, neutral(), [{atom(), non_neg_integer(), Core.expr()}], env()}
+          | {:ncase, neutral(), [{atom(), non_neg_integer(), {env(), Core.expr()}}]}
 
   # ============================================================================
   # Constructors

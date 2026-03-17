@@ -224,7 +224,7 @@ defmodule Haruspex.Unify do
       {:ndef, _, args} -> Enum.any?(args, &occurs_in?(ms, meta_id, &1))
       {:nbuiltin, _} -> false
       {:ndef_ref, _} -> false
-      {:ncase, head, _branches, _env} -> occurs_in_neutral?(ms, meta_id, head)
+      {:ncase, head, _closures} -> occurs_in_neutral?(ms, meta_id, head)
     end
   end
 
@@ -309,7 +309,7 @@ defmodule Haruspex.Unify do
       {:ndef_ref, _} ->
         true
 
-      {:ncase, head, _branches, _env} ->
+      {:ncase, head, _closures} ->
         scope_ok_neutral?(head, allowed_levels)
     end
   end
@@ -606,7 +606,7 @@ defmodule Haruspex.Unify do
 
   # Stuck case expressions: if the scrutinees are equal (same stuck neutral),
   # the cases produce the same result (same branches from the same definition).
-  defp unify_neutral(ms, lvl, {:ncase, ne1, _b1, _env1}, {:ncase, ne2, _b2, _env2}) do
+  defp unify_neutral(ms, lvl, {:ncase, ne1, _c1}, {:ncase, ne2, _c2}) do
     unify_neutral(ms, lvl, ne1, ne2)
   end
 
