@@ -178,24 +178,22 @@ defmodule Haruspex do
   end
 
   @doc """
-  Elaborate a single definition's type and body into core terms.
-  Returns `{:ok, {type_core, body_core}}`.
+  Elaborate a single definition's surface AST to core terms.
 
-  For definitions in a mutual group, delegates to `haruspex_elaborate_mutual`
-  which elaborates all group members together.
+  This is the elaboration-only query — it does NOT type-check. Used by
+  `collect_total_defs` to get @total function bodies for type-level
+  reduction without triggering checking cycles.
   """
-  defquery :haruspex_elaborate, key: {uri, name} do
+  defquery :haruspex_elaborate_core, key: {uri, name} do
     {:ok, entity_ids} = Roux.Runtime.query!(db, :haruspex_parse, uri)
 
-    # Check if this def belongs to a mutual group.
     mutual_groups = file_mutual_groups(db, uri)
     group = Enum.find(mutual_groups, fn names -> name in names end)
 
     if group do
-      # Elaborate the whole mutual group, then extract this def's result.
       {:ok, results} = Roux.Runtime.query!(db, :haruspex_elaborate_mutual, {uri, group})
       {^name, type_core, body_core} = Enum.find(results, fn {n, _, _} -> n == name end)
-      {:ok, {type_core, body_core}}
+      {:ok, {type_core, body_core, Haruspex.Unify.MetaState.new()}}
     else
       entity_id = find_entity(db, entity_ids, name)
       def_ast = Roux.Runtime.field(db, Definition, entity_id, :surface_ast)
@@ -204,13 +202,93 @@ defmodule Haruspex do
       def_ast = Haruspex.Elaborate.resolve_auto_implicits(ctx, def_ast)
 
       case Haruspex.Elaborate.elaborate_def(ctx, def_ast) do
-        {:ok, {^name, type_core, body_core}, _ctx} ->
+        {:ok, {^name, type_core, body_core}, elab_ctx} ->
           update_entity(db, entity_id, %{type: type_core, body: body_core})
-          {:ok, {type_core, body_core}}
+          {:ok, {type_core, body_core, elab_ctx.meta_state}}
 
         {:error, _} = err ->
           err
       end
+    end
+  end
+
+  @doc """
+  Elaborate and type-check a single definition.
+
+  Unified pass: elaborates surface AST to core terms, then immediately
+  type-checks with a shared MetaState so that metas from elaboration
+  (holes, auto-implicits) survive into the checker. Returns
+  `{:ok, {type_core, checked_body_core}}`.
+  """
+  defquery :haruspex_elaborate, key: {uri, name} do
+    {:ok, {type_core, body_core, elab_meta_state}} =
+      Roux.Runtime.query!(db, :haruspex_elaborate_core, {uri, name})
+
+    check_result = check_elaborated_def(db, uri, name, type_core, body_core, elab_meta_state)
+
+    with {:ok, {type_core, checked_body}} <- check_result do
+      {:ok, entity_ids} = Roux.Runtime.query!(db, :haruspex_parse, uri)
+      entity_id = find_entity(db, entity_ids, name)
+      update_entity(db, entity_id, %{type: type_core, body: checked_body})
+      {:ok, {type_core, checked_body}}
+    end
+  end
+
+  # Type-check an elaborated definition, sharing the elaboration MetaState.
+  defp check_elaborated_def(db, uri, name, type_core, body_core, elab_meta_state) do
+    {:ok, {adts, records, classes, instances}} =
+      Roux.Runtime.query!(db, :haruspex_elaborate_types, uri)
+
+    total_defs = collect_total_defs(db, uri, name)
+    fuel = def_fuel(db, uri, name)
+
+    # Share the elaboration MetaState so holes and metas survive.
+    ctx = %{
+      Haruspex.Check.from_meta_state(elab_meta_state)
+      | db: db,
+        uri: uri,
+        adts: adts,
+        records: records,
+        classes: classes,
+        instances: instances,
+        total_defs: total_defs,
+        fuel: fuel
+    }
+
+    mutual_groups = file_mutual_groups(db, uri)
+    group = Enum.find(mutual_groups, fn names -> name in names end)
+
+    check_result =
+      if group do
+        # For mutual groups, read sibling types from entity storage
+        # (populated by haruspex_elaborate_mutual) to avoid query cycles.
+        {:ok, entity_ids} = Roux.Runtime.query!(db, :haruspex_parse, uri)
+
+        all_sigs =
+          Enum.map(group, fn sib_name ->
+            sib_id = find_entity(db, entity_ids, sib_name)
+            sib_type = Roux.Runtime.field(db, Definition, sib_id, :type)
+            {sib_name, sib_type}
+          end)
+
+        Haruspex.Check.check_mutual_definition(ctx, name, type_core, body_core, all_sigs)
+      else
+        Haruspex.Check.check_definition(ctx, name, type_core, body_core)
+      end
+
+    case check_result do
+      {:ok, checked_body, _ctx} ->
+        if def_total?(db, uri, name) do
+          case Haruspex.Totality.check_totality(name, type_core, checked_body, adts) do
+            :total -> {:ok, {type_core, checked_body}}
+            {:not_total, reason} -> {:error, reason}
+          end
+        else
+          {:ok, {type_core, checked_body}}
+        end
+
+      {:error, _} = err ->
+        err
     end
   end
 
@@ -232,7 +310,6 @@ defmodule Haruspex do
 
     case Haruspex.Mutual.elaborate_mutual(ctx, def_asts) do
       {:ok, results, _ctx} ->
-        # Write results back to entities.
         Enum.each(results, fn {name, type_core, body_core} ->
           entity_id = find_entity(db, entity_ids, name)
           update_entity(db, entity_id, %{type: type_core, body: body_core})
@@ -246,64 +323,11 @@ defmodule Haruspex do
   end
 
   @doc """
-  Type-check a single definition. Returns `{:ok, {type_core, body_core}}`.
+  Type-check a single definition. Delegates to `haruspex_elaborate` which
+  now performs both elaboration and checking in a unified pass.
   """
   defquery :haruspex_check, key: {uri, name} do
-    {:ok, {type_core, body_core}} = Roux.Runtime.query!(db, :haruspex_elaborate, {uri, name})
-
-    {:ok, {adts, records, classes, instances}} =
-      Roux.Runtime.query!(db, :haruspex_elaborate_types, uri)
-
-    total_defs = collect_total_defs(db, uri)
-    fuel = def_fuel(db, uri, name)
-
-    ctx = %{
-      Haruspex.Check.new()
-      | db: db,
-        uri: uri,
-        adts: adts,
-        records: records,
-        classes: classes,
-        instances: instances,
-        total_defs: total_defs,
-        fuel: fuel
-    }
-
-    # Check if this def belongs to a mutual group.
-    mutual_groups = file_mutual_groups(db, uri)
-    group = Enum.find(mutual_groups, fn names -> name in names end)
-
-    check_result =
-      if group do
-        # Get all sibling types for mutual checking.
-        all_sigs =
-          Enum.map(group, fn sib_name ->
-            {:ok, {sib_type, _}} =
-              Roux.Runtime.query!(db, :haruspex_elaborate, {uri, sib_name})
-
-            {sib_name, sib_type}
-          end)
-
-        Haruspex.Check.check_mutual_definition(ctx, name, type_core, body_core, all_sigs)
-      else
-        Haruspex.Check.check_definition(ctx, name, type_core, body_core)
-      end
-
-    case check_result do
-      {:ok, checked_body, _ctx} ->
-        # If @total, verify structural recursion.
-        if def_total?(db, uri, name) do
-          case Haruspex.Totality.check_totality(name, type_core, checked_body, adts) do
-            :total -> {:ok, {type_core, checked_body}}
-            {:not_total, reason} -> {:error, reason}
-          end
-        else
-          {:ok, {type_core, checked_body}}
-        end
-
-      {:error, _} = err ->
-        err
-    end
+    Roux.Runtime.query!(db, :haruspex_elaborate, {uri, name})
   end
 
   @doc """
@@ -571,21 +595,20 @@ defmodule Haruspex do
 
   # Collect all @total definitions from a file for type-level reduction.
   # Returns %{name => {body_core, true}} for each total def with an elaborated body.
-  defp collect_total_defs(db, uri) do
+  # Collect @total definitions for type-level reduction, excluding
+  # the definition currently being checked (to avoid query cycles).
+  defp collect_total_defs(db, uri, exclude_name \\ nil) do
     {:ok, entity_ids} = Roux.Runtime.query!(db, :haruspex_parse, uri)
 
     Enum.reduce(entity_ids, %{}, fn entity_id, acc ->
       total? = Roux.Runtime.field(db, Definition, entity_id, :total?) == true
+      def_name = Roux.Runtime.field(db, Definition, entity_id, :name)
 
-      if total? do
-        def_name = Roux.Runtime.field(db, Definition, entity_id, :name)
-
-        case Roux.Runtime.query(db, :haruspex_elaborate, {uri, def_name}) do
-          {:ok, {_type, body}} ->
-            # The elaborated body is checked under a context where the def name
-            # is bound at index 0 (outermost). Replace this self-reference with
-            # {:def_ref, name} so the body works correctly during type-level
-            # reduction (where the env doesn't include the def binding).
+      if total? and def_name != exclude_name do
+        # Read from the elaboration-only query (not the checking query)
+        # to avoid cycles between definitions that reference each other.
+        case Roux.Runtime.query(db, :haruspex_elaborate_core, {uri, def_name}) do
+          {:ok, {_type, body, _ms}} ->
             body = Haruspex.Core.subst(body, 0, {:def_ref, def_name})
             Map.put(acc, def_name, {body, true})
 
