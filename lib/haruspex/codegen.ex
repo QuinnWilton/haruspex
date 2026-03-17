@@ -100,6 +100,9 @@ defmodule Haruspex.Codegen do
 
         erased = Erase.erase(body, type, %Erase{types: outer_types})
 
+        # Optimize the erased body via equality saturation.
+        erased = Haruspex.Optimizer.optimize(erased)
+
         # Replace outer binding variables with {:self_ref, name} markers.
         erased =
           outer_names
