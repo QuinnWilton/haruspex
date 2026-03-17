@@ -172,6 +172,12 @@ defmodule Haruspex.Pretty do
     "fn(" <> binder_name <> ") do " <> body_str <> " end"
   end
 
+  defp do_pretty({:vrefine, base, name, pred}, names, level, disambig) do
+    base_str = do_pretty(base, names, level, disambig)
+    pred_str = pretty_constrain_pred(pred)
+    "{" <> Atom.to_string(name) <> " : " <> base_str <> " | " <> pred_str <> "}"
+  end
+
   defp do_pretty({:vneutral, _type, ne}, names, level, disambig) do
     do_pretty_neutral(ne, names, level, disambig)
   end
@@ -381,6 +387,12 @@ defmodule Haruspex.Pretty do
     "case " <> scrut_str <> " { ... }"
   end
 
+  defp do_pretty_term({:refine, base, name, pred}, names, depth, disambig) do
+    base_str = do_pretty_term(base, names, depth, disambig)
+    pred_str = pretty_constrain_pred(pred)
+    "{" <> Atom.to_string(name) <> " : " <> base_str <> " | " <> pred_str <> "}"
+  end
+
   # ============================================================================
   # Helpers
   # ============================================================================
@@ -484,4 +496,47 @@ defmodule Haruspex.Pretty do
   defp eval_closure(env, body, arg) do
     Haruspex.Eval.eval(%{env: [arg | env], metas: %{}, defs: %{}, fuel: 1000}, body)
   end
+
+  # ============================================================================
+  # Constrain predicate pretty-printing
+  # ============================================================================
+
+  @spec pretty_constrain_pred(Constrain.Predicate.t()) :: String.t()
+  defp pretty_constrain_pred(true), do: "true"
+  defp pretty_constrain_pred(false), do: "false"
+  defp pretty_constrain_pred({:not, p}), do: "not(" <> pretty_constrain_pred(p) <> ")"
+
+  defp pretty_constrain_pred({:and, p, q}),
+    do: pretty_constrain_pred(p) <> " and " <> pretty_constrain_pred(q)
+
+  defp pretty_constrain_pred({:or, p, q}),
+    do: pretty_constrain_pred(p) <> " or " <> pretty_constrain_pred(q)
+
+  defp pretty_constrain_pred({op, lhs, rhs})
+       when op in [:eq, :neq, :lt, :gt, :lte, :gte] do
+    op_str =
+      case op do
+        :eq -> "=="
+        :neq -> "!="
+        :lt -> "<"
+        :gt -> ">"
+        :lte -> "<="
+        :gte -> ">="
+      end
+
+    pretty_constrain_expr(lhs) <> " " <> op_str <> " " <> pretty_constrain_expr(rhs)
+  end
+
+  defp pretty_constrain_pred(other), do: inspect(other)
+
+  @spec pretty_constrain_expr(Constrain.Predicate.expr()) :: String.t()
+  defp pretty_constrain_expr({:var, name}), do: Atom.to_string(name)
+  defp pretty_constrain_expr({:lit, v}) when is_integer(v), do: Integer.to_string(v)
+  defp pretty_constrain_expr({:lit, v}) when is_float(v), do: Float.to_string(v)
+  defp pretty_constrain_expr({:lit, v}), do: inspect(v)
+
+  defp pretty_constrain_expr({:op, op, args}),
+    do: "#{op}(#{Enum.map_join(args, ", ", &pretty_constrain_expr/1)})"
+
+  defp pretty_constrain_expr(other), do: inspect(other)
 end

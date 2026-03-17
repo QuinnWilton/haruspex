@@ -285,6 +285,7 @@ defmodule Haruspex.Elaborate do
   def elaborate(ctx, {:pi, _, _, _, _} = node), do: elaborate_type(ctx, node)
   def elaborate(ctx, {:sigma, _, _, _, _} = node), do: elaborate_type(ctx, node)
   def elaborate(ctx, {:type_universe, _, _} = node), do: elaborate_type(ctx, node)
+  def elaborate(ctx, {:refinement, _, _, _, _} = node), do: elaborate_type(ctx, node)
 
   @doc """
   Elaborate a surface type expression into a core term.
@@ -324,6 +325,13 @@ defmodule Haruspex.Elaborate do
 
   def elaborate_type(ctx, {:type_universe, _span, n}) when is_integer(n) do
     {:ok, {:type, {:llit, n}}, ctx}
+  end
+
+  def elaborate_type(ctx, {:refinement, _span, name, base_type, pred_expr}) do
+    with {:ok, base_core, ctx} <- elaborate_type(ctx, base_type) do
+      constrain_pred = Haruspex.Predicate.translate(pred_expr, name)
+      {:ok, {:refine, base_core, name, constrain_pred}, ctx}
+    end
   end
 
   # Any other expression used as a type falls through to regular elaboration.

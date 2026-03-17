@@ -45,6 +45,7 @@ defmodule Haruspex.Core do
           | {:con, atom(), atom(), [expr()]}
           | {:case, expr(), [{atom(), non_neg_integer(), expr()}]}
           | {:record_proj, atom(), expr()}
+          | {:refine, expr(), atom(), Constrain.Predicate.t()}
           | {:def_ref, atom()}
           | :erased
 
@@ -102,6 +103,9 @@ defmodule Haruspex.Core do
 
   @spec spanned(Pentiment.Span.Byte.t(), expr()) :: expr()
   def spanned(span, expr), do: {:spanned, span, expr}
+
+  @spec refine(expr(), atom(), Constrain.Predicate.t()) :: expr()
+  def refine(base, name, pred), do: {:refine, base, name, pred}
 
   # ============================================================================
   # Substitution
@@ -172,6 +176,10 @@ defmodule Haruspex.Core do
 
   def subst({:record_proj, field, expr}, target, replacement) do
     {:record_proj, field, subst(expr, target, replacement)}
+  end
+
+  def subst({:refine, base, name, pred}, target, replacement) do
+    {:refine, subst(base, target, replacement), name, pred}
   end
 
   def subst({:case, scrutinee, branches}, target, replacement) do
@@ -258,6 +266,10 @@ defmodule Haruspex.Core do
 
   def shift({:record_proj, field, expr}, amount, cutoff) do
     {:record_proj, field, shift(expr, amount, cutoff)}
+  end
+
+  def shift({:refine, base, name, pred}, amount, cutoff) do
+    {:refine, shift(base, amount, cutoff), name, pred}
   end
 
   def shift({:case, scrutinee, branches}, amount, cutoff) do

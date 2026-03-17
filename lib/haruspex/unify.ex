@@ -589,6 +589,32 @@ defmodule Haruspex.Unify do
           {:error, {:mismatch, lhs, rhs}}
         end
 
+      # Refinement vs Refinement: unify base types, check predicates match.
+      {{:vrefine, base1, name1, pred1}, {:vrefine, base2, name2, pred2}} ->
+        with {:ok, ms} <- unify(ms, lvl, base1, base2) do
+          # Predicates are in the constrain domain — structural equality suffices
+          # after normalizing the refinement variable name.
+          normalized_pred2 =
+            if name1 != name2 do
+              Constrain.Predicate.subst(pred2, %{name2 => {:var, name1}})
+            else
+              pred2
+            end
+
+          if pred1 == normalized_pred2 do
+            {:ok, ms}
+          else
+            {:error, {:mismatch, lhs, rhs}}
+          end
+        end
+
+      # Refinement vs base type: strip the refinement and unify the base.
+      {{:vrefine, base, _name, _pred}, _} ->
+        unify(ms, lvl, base, rhs)
+
+      {_, {:vrefine, base, _name, _pred}} ->
+        unify(ms, lvl, lhs, base)
+
       # Eta for functions: VLam vs non-VLam.
       {{:vlam, _mult, env, body}, _} ->
         fresh = Value.fresh_var(lvl, {:vtype, {:llit, 0}})

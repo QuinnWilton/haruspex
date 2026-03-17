@@ -151,6 +151,10 @@ defmodule Haruspex.Eval do
     {:vcon, type_name, con_name, Enum.map(args, &eval(ctx, &1))}
   end
 
+  def eval(ctx, {:refine, base, name, pred}) do
+    {:vrefine, eval(ctx, base), name, pred}
+  end
+
   def eval(ctx, {:case, scrutinee, branches}) do
     vcase(ctx, eval(ctx, scrutinee), branches)
   end

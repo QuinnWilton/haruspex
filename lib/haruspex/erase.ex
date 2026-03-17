@@ -92,10 +92,15 @@ defmodule Haruspex.Erase do
     end
   end
 
+  # Refinement type erasure: predicates are compile-time only. Strip the
+  # refinement and erase against the base type.
+  defp check(term, {:refine, base, _name, _pred}, ctx), do: check(term, base, ctx)
+
   # Type-level terms: erase entirely.
   defp check({:pi, _, _, _}, _, _ctx), do: :erased
   defp check({:sigma, _, _}, _, _ctx), do: :erased
   defp check({:type, _}, _, _ctx), do: :erased
+  defp check({:refine, _, _, _}, _, _ctx), do: :erased
 
   # Span wrappers: strip and recurse.
   defp check({:spanned, _span, inner}, type, ctx), do: check(inner, type, ctx)
@@ -267,6 +272,7 @@ defmodule Haruspex.Erase do
   defp synth({:pi, _, _, _}, _ctx), do: {:erased, {:type, {:llit, 0}}}
   defp synth({:sigma, _, _}, _ctx), do: {:erased, {:type, {:llit, 0}}}
   defp synth({:type, l}, _ctx), do: {:erased, {:type, {:lsucc, l}}}
+  defp synth({:refine, _, _, _}, _ctx), do: {:erased, {:type, {:llit, 0}}}
 
   # Data type: type-level.
   defp synth({:data, _, _}, _ctx), do: {:erased, {:type, {:llit, 0}}}

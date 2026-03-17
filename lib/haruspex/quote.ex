@@ -86,6 +86,11 @@ defmodule Haruspex.Quote do
      quote(lvl + 1, {:vtype, {:llit, 0}}, b_val, opts)}
   end
 
+  # Refinement type: quote the base type, carry predicate through.
+  def quote(lvl, {:vtype, _}, {:vrefine, base, name, pred}, opts) do
+    {:refine, quote(lvl, {:vtype, {:llit, 0}}, base, opts), name, pred}
+  end
+
   # Neutral at any type: structural readback.
   def quote(lvl, _type, {:vneutral, _ne_type, ne}, _opts) do
     quote_neutral(lvl, ne)
@@ -199,6 +204,10 @@ defmodule Haruspex.Quote do
     arg = Value.fresh_var(lvl, a)
     b_val = Eval.eval(%{Eval.default_ctx() | env: [arg | env]}, b)
     {:sigma, quote_untyped(lvl, a), quote_untyped(lvl + 1, b_val)}
+  end
+
+  def quote_untyped(lvl, {:vrefine, base, name, pred}) do
+    {:refine, quote_untyped(lvl, base), name, pred}
   end
 
   # ============================================================================

@@ -31,6 +31,7 @@ defmodule Haruspex.Value do
           | {:vneutral, value(), neutral()}
           | {:vdata, atom(), [value()]}
           | {:vcon, atom(), atom(), [value()]}
+          | {:vrefine, value(), atom(), Constrain.Predicate.t()}
 
   @type neutral ::
           {:nvar, lvl()}
@@ -94,6 +95,9 @@ defmodule Haruspex.Value do
 
   @spec vcon(atom(), atom(), [value()]) :: value()
   def vcon(type_name, con_name, args), do: {:vcon, type_name, con_name, args}
+
+  @spec vrefine(value(), atom(), Constrain.Predicate.t()) :: value()
+  def vrefine(base, name, pred), do: {:vrefine, base, name, pred}
 
   # ============================================================================
   # Variable creation

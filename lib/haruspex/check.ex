@@ -36,6 +36,7 @@ defmodule Haruspex.Check do
           | {:multiplicity_violation, atom(), Core.mult(), non_neg_integer()}
           | {:multiplicity_mismatch, Core.mult(), Core.mult()}
           | {:universe_error, String.t()}
+          | {:refinement_failed, Constrain.Predicate.t(), [Constrain.Predicate.t()]}
 
   @enforce_keys [:context, :names, :meta_state]
   defstruct [
@@ -155,6 +156,13 @@ defmodule Haruspex.Check do
         result_level = {:lmax, a_level, b_level}
         {:ok, {:sigma, a_term, b_term}, {:vtype, result_level}, ctx}
       end
+    end
+  end
+
+  # Refinement type: a refinement is a Type if its base is a Type.
+  def synth(ctx, {:refine, base, name, pred}) do
+    with {:ok, base_term, base_level, ctx} <- check_is_type(ctx, base) do
+      {:ok, {:refine, base_term, name, pred}, {:vtype, base_level}, ctx}
     end
   end
 
@@ -558,6 +566,28 @@ defmodule Haruspex.Check do
         )
 
       {:ok, {:case, scrut_term, Enum.reverse(checked_branches)}, ctx}
+    end
+  end
+
+  # Refinement type: check the base type, then discharge the predicate.
+  def check(ctx, term, {:vrefine, base, ref_name, pred}) do
+    with {:ok, term, ctx} <- check(ctx, term, base) do
+      # Determine the constrain expression to substitute for the refinement variable.
+      # For literals, use a literal; for variables, use the binding name.
+      value_expr = core_to_constrain_expr(ctx, term)
+      subst_pred = Constrain.Predicate.subst(pred, %{ref_name => value_expr})
+      assumptions = Haruspex.Predicate.gather_assumptions(ctx.context)
+
+      case Haruspex.Predicate.discharge(assumptions, subst_pred) do
+        :yes ->
+          {:ok, term, ctx}
+
+        :no ->
+          {:error, {:refinement_failed, pred, assumptions}}
+
+        {:unknown, _reason} ->
+          {:error, {:refinement_failed, pred, assumptions}}
+      end
     end
   end
 
@@ -1211,6 +1241,23 @@ defmodule Haruspex.Check do
       type_str = Pretty.pretty(binding.type, ctx.names, Context.level(ctx.context))
       {binding.name, type_str}
     end)
+  end
+
+  # Convert a core term to a constrain expression for refinement predicate
+  # substitution. Literals become {:lit, value}, variables become {:var, name}
+  # (using their context binding name).
+  @spec core_to_constrain_expr(t(), Core.expr()) :: Constrain.Predicate.expr()
+  defp core_to_constrain_expr(_ctx, {:lit, value}), do: {:lit, value}
+
+  defp core_to_constrain_expr(ctx, {:var, ix}) do
+    name = Context.lookup_name(ctx.context, ix)
+    {:var, name}
+  end
+
+  defp core_to_constrain_expr(_ctx, _term) do
+    # For complex terms (applications, etc.), we can't translate them into
+    # the constrain expression language. Use a fresh variable as a placeholder.
+    {:var, :_unknown}
   end
 
   # ============================================================================
