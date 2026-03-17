@@ -15,6 +15,7 @@ defmodule Haruspex.FileInfo do
       :record_decls,
       :class_decls,
       :instance_decls,
-      :mutual_groups
+      :mutual_groups,
+      :implicit_decls
     ]
 end

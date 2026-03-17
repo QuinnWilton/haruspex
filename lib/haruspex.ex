@@ -69,7 +69,7 @@ defmodule Haruspex do
     case Haruspex.Parser.parse(source) do
       {:ok, top_level_forms} ->
         {entity_ids, imports, no_prelude?, type_decls, record_decls, class_decls, instance_decls,
-         mutual_groups} = collect_top_level(db, uri, top_level_forms)
+         mutual_groups, implicit_decls} = collect_top_level(db, uri, top_level_forms)
 
         # Store file-level metadata.
         Roux.Runtime.create(db, FileInfo, %{
@@ -80,7 +80,8 @@ defmodule Haruspex do
           record_decls: record_decls,
           class_decls: class_decls,
           instance_decls: instance_decls,
-          mutual_groups: mutual_groups
+          mutual_groups: mutual_groups,
+          implicit_decls: implicit_decls
         })
 
         {:ok, entity_ids}
@@ -200,6 +201,7 @@ defmodule Haruspex do
       def_ast = Roux.Runtime.field(db, Definition, entity_id, :surface_ast)
 
       ctx = make_elaborate_ctx(db, uri)
+      def_ast = Haruspex.Elaborate.resolve_auto_implicits(ctx, def_ast)
 
       case Haruspex.Elaborate.elaborate_def(ctx, def_ast) do
         {:ok, {^name, type_core, body_core}, _ctx} ->
@@ -219,13 +221,14 @@ defmodule Haruspex do
   defquery :haruspex_elaborate_mutual, key: {uri, group_names} do
     {:ok, entity_ids} = Roux.Runtime.query!(db, :haruspex_parse, uri)
 
+    ctx = make_elaborate_ctx(db, uri)
+
     def_asts =
       Enum.map(group_names, fn name ->
         entity_id = find_entity(db, entity_ids, name)
-        Roux.Runtime.field(db, Definition, entity_id, :surface_ast)
+        ast = Roux.Runtime.field(db, Definition, entity_id, :surface_ast)
+        Haruspex.Elaborate.resolve_auto_implicits(ctx, ast)
       end)
-
-    ctx = make_elaborate_ctx(db, uri)
 
     case Haruspex.Mutual.elaborate_mutual(ctx, def_asts) do
       {:ok, results, _ctx} ->
@@ -417,12 +420,13 @@ defmodule Haruspex do
   # Partition top-level forms into Definition entities, import declarations,
   # type/record declarations, mutual groups, and file-level flags.
   @spec collect_top_level(term(), String.t(), [term()]) ::
-          {[term()], [term()], boolean(), [term()], [term()], [term()], [term()], [[atom()]]}
+          {[term()], [term()], boolean(), [term()], [term()], [term()], [term()], [[atom()]],
+           [term()]}
   defp collect_top_level(db, uri, forms) do
-    Enum.reduce(forms, {[], [], false, [], [], [], [], []}, fn
+    Enum.reduce(forms, {[], [], false, [], [], [], [], [], []}, fn
       {:def, span, {:sig, _sig_span, name, name_span, _params, _ret, attrs} = _sig, _body} =
           def_ast,
-      {ids, imports, no_prelude?, tds, rds, cds, inds, mgs} ->
+      {ids, imports, no_prelude?, tds, rds, cds, inds, mgs, imds} ->
         entity_id =
           Roux.Runtime.create(db, Definition, %{
             uri: uri,
@@ -439,34 +443,40 @@ defmodule Haruspex do
             name_span: name_span
           })
 
-        {ids ++ [entity_id], imports, no_prelude?, tds, rds, cds, inds, mgs}
+        {ids ++ [entity_id], imports, no_prelude?, tds, rds, cds, inds, mgs, imds}
 
       {:import, _span, module_path, open_option},
-      {ids, imports, no_prelude?, tds, rds, cds, inds, mgs} ->
+      {ids, imports, no_prelude?, tds, rds, cds, inds, mgs, imds} ->
         {ids, imports ++ [%{module_path: module_path, open: open_option}], no_prelude?, tds, rds,
-         cds, inds, mgs}
+         cds, inds, mgs, imds}
 
-      {:no_prelude, _span}, {ids, imports, _no_prelude?, tds, rds, cds, inds, mgs} ->
-        {ids, imports, true, tds, rds, cds, inds, mgs}
+      {:no_prelude, _span}, {ids, imports, _no_prelude?, tds, rds, cds, inds, mgs, imds} ->
+        {ids, imports, true, tds, rds, cds, inds, mgs, imds}
 
-      {:type_decl, _, _, _, _} = td, {ids, imports, no_prelude?, tds, rds, cds, inds, mgs} ->
-        {ids, imports, no_prelude?, tds ++ [td], rds, cds, inds, mgs}
+      {:type_decl, _, _, _, _} = td,
+      {ids, imports, no_prelude?, tds, rds, cds, inds, mgs, imds} ->
+        {ids, imports, no_prelude?, tds ++ [td], rds, cds, inds, mgs, imds}
 
-      {:record_decl, _, _, _, _} = rd, {ids, imports, no_prelude?, tds, rds, cds, inds, mgs} ->
-        {ids, imports, no_prelude?, tds, rds ++ [rd], cds, inds, mgs}
+      {:record_decl, _, _, _, _} = rd,
+      {ids, imports, no_prelude?, tds, rds, cds, inds, mgs, imds} ->
+        {ids, imports, no_prelude?, tds, rds ++ [rd], cds, inds, mgs, imds}
 
-      {:class_decl, _, _, _, _, _} = cd, {ids, imports, no_prelude?, tds, rds, cds, inds, mgs} ->
-        {ids, imports, no_prelude?, tds, rds, cds ++ [cd], inds, mgs}
+      {:class_decl, _, _, _, _, _} = cd,
+      {ids, imports, no_prelude?, tds, rds, cds, inds, mgs, imds} ->
+        {ids, imports, no_prelude?, tds, rds, cds ++ [cd], inds, mgs, imds}
 
       {:class_decl, _, _, _, _, _, :protocol} = cd,
-      {ids, imports, no_prelude?, tds, rds, cds, inds, mgs} ->
-        {ids, imports, no_prelude?, tds, rds, cds ++ [cd], inds, mgs}
+      {ids, imports, no_prelude?, tds, rds, cds, inds, mgs, imds} ->
+        {ids, imports, no_prelude?, tds, rds, cds ++ [cd], inds, mgs, imds}
 
       {:instance_decl, _, _, _, _, _} = ind,
-      {ids, imports, no_prelude?, tds, rds, cds, inds, mgs} ->
-        {ids, imports, no_prelude?, tds, rds, cds, inds ++ [ind], mgs}
+      {ids, imports, no_prelude?, tds, rds, cds, inds, mgs, imds} ->
+        {ids, imports, no_prelude?, tds, rds, cds, inds ++ [ind], mgs, imds}
 
-      {:mutual, _span, defs}, {ids, imports, no_prelude?, tds, rds, cds, inds, mgs} ->
+      {:implicit_decl, _, _} = imd, {ids, imports, no_prelude?, tds, rds, cds, inds, mgs, imds} ->
+        {ids, imports, no_prelude?, tds, rds, cds, inds, mgs, imds ++ [imd]}
+
+      {:mutual, _span, defs}, {ids, imports, no_prelude?, tds, rds, cds, inds, mgs, imds} ->
         # Create Definition entities for each def in the mutual block.
         {new_ids, group_names} =
           Enum.reduce(defs, {[], []}, fn
@@ -492,7 +502,7 @@ defmodule Haruspex do
               {id_acc ++ [entity_id], name_acc ++ [name]}
           end)
 
-        {ids ++ new_ids, imports, no_prelude?, tds, rds, cds, inds, mgs ++ [group_names]}
+        {ids ++ new_ids, imports, no_prelude?, tds, rds, cds, inds, mgs ++ [group_names], imds}
 
       _other, acc ->
         acc
@@ -508,18 +518,33 @@ defmodule Haruspex do
 
     file_defs = collect_file_def_names(db, uri)
 
-    Haruspex.Elaborate.new(
-      db: db,
-      uri: uri,
-      imports: imports,
-      source_roots: source_roots(),
-      no_prelude?: no_prelude?,
-      adts: adts,
-      records: records,
-      classes: classes,
-      instances: instances,
-      file_defs: file_defs
-    )
+    ctx =
+      Haruspex.Elaborate.new(
+        db: db,
+        uri: uri,
+        imports: imports,
+        source_roots: source_roots(),
+        no_prelude?: no_prelude?,
+        adts: adts,
+        records: records,
+        classes: classes,
+        instances: instances,
+        file_defs: file_defs
+      )
+
+    # Register @implicit declarations so auto-implicit resolution works.
+    implicit_decls = file_implicit_decls(db, uri)
+    Enum.reduce(implicit_decls, ctx, &Haruspex.Elaborate.register_implicits(&2, &1))
+  end
+
+  defp file_implicit_decls(db, uri) do
+    case Roux.Runtime.lookup(db, FileInfo, {uri}) do
+      {:ok, file_info_id} ->
+        Roux.Runtime.field(db, FileInfo, file_info_id, :implicit_decls) || []
+
+      :error ->
+        []
+    end
   end
 
   defp collect_file_def_names(db, uri) do
