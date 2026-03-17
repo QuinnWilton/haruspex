@@ -1,12 +1,13 @@
 [extension]
 id = "haruspex"
 name = "Haruspex"
-description = "Haruspex dependently typed language support"
+description = "Haruspex language support"
 version = "0.1.0"
 schema_version = 1
-authors = ["beam_box contributors"]
+authors = ["quinnwilton"]
 repository = "https://github.com/quinnwilton/haruspex"
 
 [grammars.haruspex]
 repository = "https://github.com/quinnwilton/haruspex"
+rev = "d6ea0ff"
 path = "tree-sitter-haruspex"
