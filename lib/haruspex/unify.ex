@@ -37,7 +37,7 @@ defmodule Haruspex.Unify do
   @spec unify(MetaState.t(), non_neg_integer(), Value.value(), Value.value()) ::
           {:ok, MetaState.t()} | {:error, unify_error()}
   def unify(ms, lvl, lhs, rhs) do
-    whnf_ctx = %{Eval.default_ctx() | metas: ms.entries}
+    whnf_ctx = eval_ctx(ms)
     lhs = Eval.whnf(whnf_ctx, lhs)
     rhs = Eval.whnf(whnf_ctx, rhs)
 
@@ -130,8 +130,7 @@ defmodule Haruspex.Unify do
         solution = abstract(lvl, spine_levels, rigid)
         # Evaluate the abstracted core term to get a value, passing the
         # meta entries so that meta type annotations are preserved correctly.
-        eval_ctx = %{Eval.default_ctx() | metas: ms.entries}
-        solution_val = Eval.eval(eval_ctx, solution)
+        solution_val = Eval.eval(eval_ctx(ms), solution)
         MetaState.solve(ms, meta_id, solution_val)
       end
     end
@@ -176,7 +175,7 @@ defmodule Haruspex.Unify do
   end
 
   defp occurs_in?(ms, meta_id, value) do
-    value = Eval.whnf(%{Eval.default_ctx() | metas: ms.entries}, value)
+    value = Eval.whnf(eval_ctx(ms), value)
 
     case value do
       {:vneutral, type, ne} ->
@@ -206,6 +205,9 @@ defmodule Haruspex.Unify do
       {:vextern, _, _, _} ->
         false
 
+      {:vglobal, _, _, _} ->
+        false
+
       {:vdata, _, args} ->
         Enum.any?(args, &occurs_in?(ms, meta_id, &1))
 
@@ -233,7 +235,7 @@ defmodule Haruspex.Unify do
   defp occurs_in_closure?(ms, meta_id, env, body) do
     lvl = length(env)
     fresh = Value.fresh_var(lvl, {:vtype, {:llit, 0}})
-    body_val = Eval.eval(%{Eval.default_ctx() | env: [fresh | env]}, body)
+    body_val = Eval.eval(eval_ctx(ms, [fresh | env]), body)
     occurs_in?(ms, meta_id, body_val)
   end
 
@@ -273,6 +275,9 @@ defmodule Haruspex.Unify do
         true
 
       {:vextern, _, _, _} ->
+        true
+
+      {:vglobal, _, _, _} ->
         true
 
       {:vdata, _, args} ->
@@ -436,6 +441,11 @@ defmodule Haruspex.Unify do
   # Rigid-rigid unification
   # ============================================================================
 
+  # Build an eval context with the current meta entries for closure evaluation.
+  defp eval_ctx(ms, env \\ []) do
+    %{Eval.default_ctx() | env: env, metas: ms.entries}
+  end
+
   defp unify_rigid(ms, lvl, lhs, rhs) do
     case {lhs, rhs} do
       # Pi vs Pi.
@@ -446,8 +456,8 @@ defmodule Haruspex.Unify do
           with {:ok, ms} <- unify(ms, lvl, dom1, dom2) do
             # Evaluate codomains with a fresh variable.
             fresh = Value.fresh_var(lvl, dom1)
-            cod1_val = Eval.eval(%{Eval.default_ctx() | env: [fresh | env1]}, cod1)
-            cod2_val = Eval.eval(%{Eval.default_ctx() | env: [fresh | env2]}, cod2)
+            cod1_val = Eval.eval(eval_ctx(ms, [fresh | env1]), cod1)
+            cod2_val = Eval.eval(eval_ctx(ms, [fresh | env2]), cod2)
             unify(ms, lvl + 1, cod1_val, cod2_val)
           end
         end
@@ -456,16 +466,16 @@ defmodule Haruspex.Unify do
       {{:vsigma, a1, env1, b1}, {:vsigma, a2, env2, b2}} ->
         with {:ok, ms} <- unify(ms, lvl, a1, a2) do
           fresh = Value.fresh_var(lvl, a1)
-          b1_val = Eval.eval(%{Eval.default_ctx() | env: [fresh | env1]}, b1)
-          b2_val = Eval.eval(%{Eval.default_ctx() | env: [fresh | env2]}, b2)
+          b1_val = Eval.eval(eval_ctx(ms, [fresh | env1]), b1)
+          b2_val = Eval.eval(eval_ctx(ms, [fresh | env2]), b2)
           unify(ms, lvl + 1, b1_val, b2_val)
         end
 
       # Lam vs Lam.
       {{:vlam, _m1, env1, body1}, {:vlam, _m2, env2, body2}} ->
         fresh = Value.fresh_var(lvl, {:vtype, {:llit, 0}})
-        b1 = Eval.eval(%{Eval.default_ctx() | env: [fresh | env1]}, body1)
-        b2 = Eval.eval(%{Eval.default_ctx() | env: [fresh | env2]}, body2)
+        b1 = Eval.eval(eval_ctx(ms, [fresh | env1]), body1)
+        b2 = Eval.eval(eval_ctx(ms, [fresh | env2]), body2)
         unify(ms, lvl + 1, b1, b2)
 
       # Pair vs Pair.
@@ -522,17 +532,25 @@ defmodule Haruspex.Unify do
           {:error, {:mismatch, lhs, rhs}}
         end
 
+      # Global vs Global (cross-module references).
+      {{:vglobal, m1, n1, a1}, {:vglobal, m2, n2, a2}} ->
+        if m1 == m2 and n1 == n2 and a1 == a2 do
+          {:ok, ms}
+        else
+          {:error, {:mismatch, lhs, rhs}}
+        end
+
       # Eta for functions: VLam vs non-VLam.
       {{:vlam, _mult, env, body}, _} ->
         fresh = Value.fresh_var(lvl, {:vtype, {:llit, 0}})
-        lhs_body = Eval.eval(%{Eval.default_ctx() | env: [fresh | env]}, body)
-        rhs_body = Eval.vapp(Eval.default_ctx(), rhs, fresh)
+        lhs_body = Eval.eval(eval_ctx(ms, [fresh | env]), body)
+        rhs_body = Eval.vapp(eval_ctx(ms), rhs, fresh)
         unify(ms, lvl + 1, lhs_body, rhs_body)
 
       {_, {:vlam, _mult, env, body}} ->
         fresh = Value.fresh_var(lvl, {:vtype, {:llit, 0}})
-        rhs_body = Eval.eval(%{Eval.default_ctx() | env: [fresh | env]}, body)
-        lhs_body = Eval.vapp(Eval.default_ctx(), lhs, fresh)
+        rhs_body = Eval.eval(eval_ctx(ms, [fresh | env]), body)
+        lhs_body = Eval.vapp(eval_ctx(ms), lhs, fresh)
         unify(ms, lvl + 1, lhs_body, rhs_body)
 
       # Eta for pairs: VPair vs non-VPair at sigma type.

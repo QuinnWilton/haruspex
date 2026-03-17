@@ -263,9 +263,10 @@ defmodule Haruspex.Eval do
   end
 
   # Stuck application on neutral.
-  def vapp(_ctx, {:vneutral, {:vpi, _m, _dom, env, cod}, ne}, arg) do
+  def vapp(ctx, {:vneutral, {:vpi, _m, _dom, env, cod}, ne}, arg) do
     # The result type is the codomain instantiated with the argument.
-    cod_type = do_eval_in_env(env, cod, arg)
+    # Thread metas and defs so solved metas in the codomain resolve correctly.
+    cod_type = eval(%{ctx | env: [arg | env]}, cod)
     {:vneutral, cod_type, {:napp, ne, arg}}
   end
 
