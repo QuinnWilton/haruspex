@@ -1,0 +1,16 @@
+name = "Haruspex"
+grammar = "haruspex"
+path_suffixes = ["hx"]
+line_comments = ["# "]
+block_comment = []
+autoclose_before = ";:.,=})]>"
+brackets = [
+  { start = "(", end = ")", close = true, newline = false },
+  { start = "{", end = "}", close = true, newline = false },
+  { start = "[", end = "]", close = true, newline = false },
+  { start = "\"", end = "\"", close = true, newline = false, not_in = ["string"] },
+]
+word_characters = ["_"]
+tab_size = 2
+indent_on = "\\b(do|fn)\\b"
+outdent_on = "\\b(end)\\b"
