@@ -581,6 +581,65 @@ defmodule Haruspex.PredicateTest do
   end
 
   # ============================================================================
+  # Full pipeline tests (parse → elaborate → check → codegen → eval)
+  # ============================================================================
+
+  describe "full pipeline" do
+    test "positive integer function compiles and runs" do
+      db = Roux.Database.new()
+      Roux.Lang.register(db, Haruspex)
+
+      Roux.Input.set(db, :source_text, "lib/refine_pos.hx", """
+      def double_pos(n : {n : Int | n > 0}) : Int do
+        n + n
+      end
+      """)
+
+      {:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, "lib/refine_pos.hx")
+      assert mod.double_pos(5) == 10
+      :code.purge(mod)
+      :code.delete(mod)
+    end
+
+    test "non-zero divisor function compiles and runs" do
+      db = Roux.Database.new()
+      Roux.Lang.register(db, Haruspex)
+
+      Roux.Input.set(db, :source_text, "lib/refine_div.hx", """
+      def safe_div(x : Int, y : {y : Int | y != 0}) : Int do
+        x / y
+      end
+      """)
+
+      {:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, "lib/refine_div.hx")
+      assert mod.safe_div(10, 2) == 5
+      :code.purge(mod)
+      :code.delete(mod)
+    end
+
+    test "multiple refined parameters in same file" do
+      db = Roux.Database.new()
+      Roux.Lang.register(db, Haruspex)
+
+      Roux.Input.set(db, :source_text, "lib/refine_multi.hx", """
+      def double_pos(n : {n : Int | n > 0}) : Int do
+        n + n
+      end
+
+      def safe_div(x : Int, y : {y : Int | y != 0}) : Int do
+        x / y
+      end
+      """)
+
+      {:ok, mod} = Roux.Runtime.query(db, :haruspex_compile, "lib/refine_multi.hx")
+      assert mod.double_pos(3) == 6
+      assert mod.safe_div(10, 5) == 2
+      :code.purge(mod)
+      :code.delete(mod)
+    end
+  end
+
+  # ============================================================================
   # Helpers
   # ============================================================================
 

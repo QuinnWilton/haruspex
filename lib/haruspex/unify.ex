@@ -213,6 +213,9 @@ defmodule Haruspex.Unify do
 
       {:vcon, _, _, args} ->
         Enum.any?(args, &occurs_in?(ms, meta_id, &1))
+
+      {:vrefine, base, _name, _pred} ->
+        occurs_in?(ms, meta_id, base)
     end
   end
 
@@ -318,6 +321,9 @@ defmodule Haruspex.Unify do
 
       {:vcon, _, _, args} ->
         Enum.all?(args, &scope_ok?(&1, allowed_levels))
+
+      {:vrefine, base, _name, _pred} ->
+        scope_ok?(base, allowed_levels)
     end
   end
 

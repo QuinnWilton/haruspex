@@ -39,16 +39,16 @@ Tiers 0–6 are complete. Task files are in [`done/`](done/).
 4. ~~refactor-motive~~ — simplified motive computation (removed dead code)
 5. ~~refactor-pipeline-collapse~~ — removed haruspex_check query
 
-## Correctness fixes
+## Correctness fixes (all complete)
 
-Brittleness issues found by comparison with Agda/Lean/Idris compiler patterns.
+1. ~~fix-eval-ctx-threading~~ — thread metas/defs through closure evaluations; add vglobal
+2. ~~fix-ncase-scope-check~~ — inspect ncase branch closures in occurs/scope checks
+3. ~~fix-erase-subst~~ — eval+quote in erasure instead of syntactic subst
+4. ~~fix-with-convertibility~~ — NbE conversion in with-abstraction
 
-1. [[fix-eval-ctx-threading]] — thread metas/defs through all closure evaluations (eval.ex, unify.ex); add missing vglobal cases
-2. [[fix-ncase-scope-check]] — ncase scope/occurs check should inspect branch closures
-3. [[fix-erase-subst]] — erasure should use eval+quote instead of syntactic subst
-4. [[fix-with-convertibility]] — with-abstraction should use NbE conversion, not syntactic equality
+## Open improvements
 
-Items 1-2 can be done independently and immediately. Item 3 is the big one — it eliminates the root cause of implicit reinsertion hacks, meta state discontinuity, and the `collect_total_defs` substitution. Items 4-5 are best done after 3.
+- [[fix-refinement-gaps]] — pattern match assumptions, cross-def erasure, function call predicates
 
 ## Remaining tiers
 
@@ -57,7 +57,7 @@ Complete. Tasks in [`done/`](done/).
 - Totality checking, reduction gate, GADT checking, length-indexed vectors
 
 ### Tier 8: Refinements
-- [[tier8-refinements]] — refinement types, predicate language, constrain
+Complete. Tasks in [`done/`](done/).
 
 ### Tier 9: Optimization
 - [[tier9-optimizer]] — quail integration, lower/lift/saturate/extract
