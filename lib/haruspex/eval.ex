@@ -464,4 +464,81 @@ defmodule Haruspex.Eval do
   defp do_eval_in_env(env, body, arg) do
     eval(%{env: [arg | env], metas: %{}, defs: %{}, fuel: @default_fuel}, body)
   end
+
+  # ============================================================================
+  # Weak head normal form with meta resolution
+  # ============================================================================
+
+  @doc """
+  Reduce a value to weak head normal form, resolving solved metas.
+
+  Unlike `MetaState.force/2` which only follows top-level meta chains, `whnf`
+  re-reduces computations that were stuck on unsolved metas that have since
+  been solved. This handles:
+
+  - Bare solved metas: `?m` where `?m := v` → `whnf(v)`
+  - Applied solved metas: `?m(a1)(a2)` → `whnf(v(a1)(a2))`
+  - Stuck cases on solved metas: `case ?m of ...` where `?m := C(...)` → reduce case
+
+  Use this instead of `MetaState.force` whenever the value may contain
+  stale meta references from closure-captured environments.
+  """
+  @spec whnf(eval_ctx(), Value.value()) :: Value.value()
+  def whnf(ctx, {:vneutral, _type, ne} = val) do
+    case whnf_neutral(ctx, ne) do
+      {:reduced, new_val} -> whnf(ctx, new_val)
+      :stuck -> val
+    end
+  end
+
+  def whnf(_ctx, val), do: val
+
+  # Try to unstick a neutral by resolving solved metas.
+  # Returns {:reduced, value} if the neutral became a non-neutral value,
+  # or :stuck if it remains neutral.
+  @spec whnf_neutral(eval_ctx(), Value.neutral()) :: {:reduced, Value.value()} | :stuck
+  defp whnf_neutral(ctx, {:nmeta, id}) do
+    case Map.get(ctx.metas, id) do
+      {:solved, solution} -> {:reduced, solution}
+      _ -> :stuck
+    end
+  end
+
+  # Applied neutral: if the head is a solved meta, collect the spine,
+  # resolve the head, and re-apply.
+  defp whnf_neutral(ctx, {:napp, ne, arg}) do
+    case whnf_neutral(ctx, ne) do
+      {:reduced, fun_val} -> {:reduced, vapp(ctx, fun_val, arg)}
+      :stuck -> :stuck
+    end
+  end
+
+  # Stuck case: if the scrutinee is now a constructor, re-reduce.
+  defp whnf_neutral(ctx, {:ncase, ne, branches, case_env}) do
+    case whnf_neutral(ctx, ne) do
+      {:reduced, scrut_val} ->
+        {:reduced, vcase(%{ctx | env: case_env}, scrut_val, branches)}
+
+      :stuck ->
+        :stuck
+    end
+  end
+
+  # Stuck fst/snd: if the inner neutral resolves, re-project.
+  defp whnf_neutral(ctx, {:nfst, ne}) do
+    case whnf_neutral(ctx, ne) do
+      {:reduced, val} -> {:reduced, vfst(val)}
+      :stuck -> :stuck
+    end
+  end
+
+  defp whnf_neutral(ctx, {:nsnd, ne}) do
+    case whnf_neutral(ctx, ne) do
+      {:reduced, val} -> {:reduced, vsnd(val)}
+      :stuck -> :stuck
+    end
+  end
+
+  # Everything else stays stuck.
+  defp whnf_neutral(_ctx, _ne), do: :stuck
 end

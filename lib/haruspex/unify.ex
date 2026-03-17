@@ -37,8 +37,9 @@ defmodule Haruspex.Unify do
   @spec unify(MetaState.t(), non_neg_integer(), Value.value(), Value.value()) ::
           {:ok, MetaState.t()} | {:error, unify_error()}
   def unify(ms, lvl, lhs, rhs) do
-    lhs = MetaState.force(ms, lhs)
-    rhs = MetaState.force(ms, rhs)
+    whnf_ctx = %{Eval.default_ctx() | metas: ms.entries}
+    lhs = Eval.whnf(whnf_ctx, lhs)
+    rhs = Eval.whnf(whnf_ctx, rhs)
 
     cond do
       # Same pointer / structurally identical.
@@ -175,7 +176,7 @@ defmodule Haruspex.Unify do
   end
 
   defp occurs_in?(ms, meta_id, value) do
-    value = MetaState.force(ms, value)
+    value = Eval.whnf(%{Eval.default_ctx() | metas: ms.entries}, value)
 
     case value do
       {:vneutral, type, ne} ->

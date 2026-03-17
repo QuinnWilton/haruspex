@@ -487,4 +487,98 @@ defmodule Haruspex.EvalTest do
       assert result == {:vlit, 99}
     end
   end
+
+  # ============================================================================
+  # whnf — weak head normal form with meta resolution
+  # ============================================================================
+
+  alias Haruspex.Unify.MetaState
+
+  describe "whnf/2" do
+    test "non-neutral values pass through unchanged" do
+      c = ctx()
+      assert Eval.whnf(c, {:vbuiltin, :Int}) == {:vbuiltin, :Int}
+      assert Eval.whnf(c, {:vlit, 42}) == {:vlit, 42}
+      assert Eval.whnf(c, {:vdata, :Nat, []}) == {:vdata, :Nat, []}
+    end
+
+    test "unsolved meta stays neutral" do
+      ms = MetaState.new()
+      {_id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      c = %{ctx() | metas: ms.entries}
+
+      val = {:vneutral, {:vbuiltin, :Int}, {:nmeta, 0}}
+      assert {:vneutral, _, {:nmeta, 0}} = Eval.whnf(c, val)
+    end
+
+    test "solved bare meta resolves to solution" do
+      ms = MetaState.new()
+      {_id, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, 0, {:vlit, 42})
+      c = %{ctx() | metas: ms.entries}
+
+      val = {:vneutral, {:vbuiltin, :Int}, {:nmeta, 0}}
+      assert {:vlit, 42} = Eval.whnf(c, val)
+    end
+
+    test "solved meta chain resolves transitively" do
+      ms = MetaState.new()
+      {_, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {_, ms} = MetaState.fresh_meta(ms, {:vbuiltin, :Int}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, 0, {:vneutral, {:vbuiltin, :Int}, {:nmeta, 1}})
+      {:ok, ms} = MetaState.solve(ms, 1, {:vlit, 99})
+      c = %{ctx() | metas: ms.entries}
+
+      val = {:vneutral, {:vbuiltin, :Int}, {:nmeta, 0}}
+      assert {:vlit, 99} = Eval.whnf(c, val)
+    end
+
+    test "applied solved meta re-reduces" do
+      ms = MetaState.new()
+      {_, ms} = MetaState.fresh_meta(ms, {:vtype, {:llit, 0}}, 0, :implicit)
+      # Solve meta 0 to a lambda: fn x -> x
+      identity = {:vlam, :omega, [], {:var, 0}}
+      {:ok, ms} = MetaState.solve(ms, 0, identity)
+      c = %{ctx() | metas: ms.entries}
+
+      # Build: ?0(42) — applied solved meta.
+      arg = {:vlit, 42}
+      val = {:vneutral, {:vtype, {:llit, 0}}, {:napp, {:nmeta, 0}, arg}}
+
+      assert {:vlit, 42} = Eval.whnf(c, val)
+    end
+
+    test "stuck case becomes reducible after scrutinee meta solved" do
+      ms = MetaState.new()
+      {_, ms} = MetaState.fresh_meta(ms, {:vdata, :Nat, []}, 0, :implicit)
+
+      # Build stuck case: case ?0 of zero -> 1; succ(_) -> 2
+      branches = [
+        {:zero, 0, {:lit, 1}},
+        {:succ, 1, {:lit, 2}}
+      ]
+
+      stuck =
+        {:vneutral, {:vbuiltin, :Int}, {:ncase, {:nmeta, 0}, branches, []}}
+
+      # Before solving: stays stuck.
+      c_unsolved = %{ctx() | metas: ms.entries}
+      assert {:vneutral, _, {:ncase, _, _, _}} = Eval.whnf(c_unsolved, stuck)
+
+      # Solve ?0 to zero, then whnf reduces the case.
+      {:ok, ms} = MetaState.solve(ms, 0, {:vcon, :Nat, :zero, []})
+      c_solved = %{ctx() | metas: ms.entries}
+      assert {:vlit, 1} = Eval.whnf(c_solved, stuck)
+    end
+
+    test "stuck fst resolves when inner neutral is solved to pair" do
+      ms = MetaState.new()
+      {_, ms} = MetaState.fresh_meta(ms, {:vtype, {:llit, 0}}, 0, :implicit)
+      {:ok, ms} = MetaState.solve(ms, 0, {:vpair, {:vlit, 1}, {:vlit, 2}})
+      c = %{ctx() | metas: ms.entries}
+
+      val = {:vneutral, {:vbuiltin, :Int}, {:nfst, {:nmeta, 0}}}
+      assert {:vlit, 1} = Eval.whnf(c, val)
+    end
+  end
 end

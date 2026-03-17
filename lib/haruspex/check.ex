@@ -163,7 +163,7 @@ defmodule Haruspex.Check do
   # so that explicit arguments align with explicit Pi parameters.
   def synth(ctx, {:app, f, a}) do
     with {:ok, f_term, f_type, ctx} <- synth(ctx, f) do
-      f_type = MetaState.force(ctx.meta_state, f_type)
+      f_type = Eval.whnf(make_eval_ctx(ctx, []), f_type)
 
       # Peel implicit Pi's, wrapping f_term in applications to the inserted metas.
       {f_type, f_term, ctx} = peel_implicit_apps(ctx, f_type, f_term)
@@ -172,10 +172,10 @@ defmodule Haruspex.Check do
         {:vpi, _mult, dom, env, cod} ->
           with {:ok, a_term, ctx} <- check(ctx, a, dom) do
             a_val = eval_in(ctx, a_term)
-            # Force env values — metas solved during arg checking may be
-            # stale neutrals in the closure-captured env.
-            forced_env = Enum.map(env, &MetaState.force(ctx.meta_state, &1))
-            cod_val = Eval.eval(make_eval_ctx(ctx, [a_val | forced_env]), cod)
+            cod_val = Eval.eval(make_eval_ctx(ctx, [a_val | env]), cod)
+            # Resolve metas that were solved during arg checking but are
+            # stale in the closure-captured env.
+            cod_val = Eval.whnf(make_eval_ctx(ctx, []), cod_val)
             {:ok, {:app, f_term, a_term}, cod_val, ctx}
           end
 
@@ -188,7 +188,7 @@ defmodule Haruspex.Check do
   # Fst projection.
   def synth(ctx, {:fst, e}) do
     with {:ok, e_term, e_type, ctx} <- synth(ctx, e) do
-      e_type = MetaState.force(ctx.meta_state, e_type)
+      e_type = Eval.whnf(make_eval_ctx(ctx, []), e_type)
 
       case e_type do
         {:vsigma, a, _env, _b} ->
@@ -203,7 +203,7 @@ defmodule Haruspex.Check do
   # Snd projection.
   def synth(ctx, {:snd, e}) do
     with {:ok, e_term, e_type, ctx} <- synth(ctx, e) do
-      e_type = MetaState.force(ctx.meta_state, e_type)
+      e_type = Eval.whnf(make_eval_ctx(ctx, []), e_type)
 
       case e_type do
         {:vsigma, _a, env, b} ->
@@ -260,18 +260,17 @@ defmodule Haruspex.Check do
 
         {checked_args, result_type, ctx} =
           Enum.reduce(args, {[], con_type_val, ctx}, fn arg, {acc, fun_type, ctx} ->
-            fun_type = MetaState.force(ctx.meta_state, fun_type)
+            fun_type = Eval.whnf(make_eval_ctx(ctx, []), fun_type)
 
             case fun_type do
               {:vpi, _mult, dom, env, cod} ->
-                # Force domain and env — metas solved by earlier args may be stale.
-                dom = MetaState.force(ctx.meta_state, dom)
+                dom = Eval.whnf(make_eval_ctx(ctx, []), dom)
 
                 case check(ctx, arg, dom) do
                   {:ok, arg_term, ctx} ->
                     arg_val = eval_in(ctx, arg_term)
-                    forced_env = Enum.map(env, &MetaState.force(ctx.meta_state, &1))
-                    cod_val = Eval.eval(make_eval_ctx(ctx, [arg_val | forced_env]), cod)
+                    cod_val = Eval.eval(make_eval_ctx(ctx, [arg_val | env]), cod)
+                    cod_val = Eval.whnf(make_eval_ctx(ctx, []), cod_val)
                     {[arg_term | acc], cod_val, ctx}
                 end
 
@@ -304,7 +303,7 @@ defmodule Haruspex.Check do
   # Record projection: desugar to case expression.
   def synth(ctx, {:record_proj, field_name, expr}) do
     with {:ok, expr_term, expr_type, ctx} <- synth(ctx, expr) do
-      forced = MetaState.force(ctx.meta_state, expr_type)
+      forced = Eval.whnf(make_eval_ctx(ctx, []), expr_type)
 
       case record_proj_desugar(ctx, field_name, expr_term, forced) do
         {:ok, case_term, field_type} ->
@@ -319,7 +318,7 @@ defmodule Haruspex.Check do
   # Case expression.
   def synth(ctx, {:case, scrutinee, branches}) do
     with {:ok, scrut_term, scrut_type, ctx} <- synth(ctx, scrutinee) do
-      forced_scrut_type = MetaState.force(ctx.meta_state, scrut_type)
+      forced_scrut_type = Eval.whnf(make_eval_ctx(ctx, []), scrut_type)
 
       # Type check each branch with refined field types.
       {checked_branches, result_type, ctx} =
@@ -519,7 +518,7 @@ defmodule Haruspex.Check do
   # to enable dependent type refinement in branches.
   def check(ctx, {:case, scrutinee, branches}, expected) do
     with {:ok, scrut_term, scrut_type, ctx} <- synth(ctx, scrutinee) do
-      forced_scrut_type = MetaState.force(ctx.meta_state, scrut_type)
+      forced_scrut_type = Eval.whnf(make_eval_ctx(ctx, []), scrut_type)
       scrut_val = eval_in(ctx, scrut_term)
       lvl = Context.level(ctx.context)
 
@@ -1039,9 +1038,14 @@ defmodule Haruspex.Check do
               end
             end)
 
-          # Force param env to get solved values, then evaluate field types.
-          forced_env = Enum.map(param_env, &MetaState.force(solved_ms, &1))
+          # Force param env to resolve metas solved by unification, then
+          # evaluate field types under the resolved env.
           updated_ctx = %{ctx | meta_state: solved_ms}
+          whnf_ctx = make_eval_ctx(updated_ctx, [])
+
+          forced_env =
+            Enum.map(param_env, fn v -> Eval.whnf(whnf_ctx, v) end)
+
           eval_ctx = make_eval_ctx(updated_ctx, forced_env)
 
           field_types =
@@ -1117,7 +1121,7 @@ defmodule Haruspex.Check do
   # Synthesize a term and verify it's a Type, returning the level.
   defp check_is_type(ctx, term) do
     with {:ok, term, type, ctx} <- synth(ctx, term) do
-      type = MetaState.force(ctx.meta_state, type)
+      type = Eval.whnf(make_eval_ctx(ctx, []), type)
 
       case type do
         {:vtype, level} ->
@@ -1160,7 +1164,7 @@ defmodule Haruspex.Check do
   # type, wrapping the function term in applications to fresh metas. Used for
   # function application when the caller provides only explicit arguments.
   defp peel_implicit_apps(ctx, type, f_term) do
-    type = MetaState.force(ctx.meta_state, type)
+    type = Eval.whnf(make_eval_ctx(ctx, []), type)
 
     case type do
       {:vpi, :zero, dom, env, cod} ->
@@ -1180,7 +1184,7 @@ defmodule Haruspex.Check do
   # fresh metas. Returns the remaining type, the accumulated meta args (in
   # reverse order for the reduce accumulator), and updated context.
   defp peel_implicit_pis(ctx, type) do
-    type = MetaState.force(ctx.meta_state, type)
+    type = Eval.whnf(make_eval_ctx(ctx, []), type)
 
     case type do
       {:vpi, :zero, dom, env, cod} ->
