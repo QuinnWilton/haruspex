@@ -31,15 +31,22 @@ Tiers 0–6 are complete. Task files are in [`done/`](done/).
 - **Tier 6**: Type classes (classes, instances, codegen, arithmetic overload, checker instance search, builtin operator removal, subsystem gaps)
 - **Tier 7**: Totality (@total structural recursion, reduction gate)
 
-## Architectural refactors
+## Architectural refactors (all complete)
 
-Standalone improvements to the type checking infrastructure. Ordered by dependency — earlier items unblock later ones.
+1. ~~refactor-whnf~~ — proper weak head normal form with meta resolution
+2. ~~refactor-ncase-closures~~ — closure-based ncase neutrals
+3. ~~refactor-unified-elaboration~~ — unified elaboration+checking pipeline
+4. ~~refactor-motive~~ — simplified motive computation (removed dead code)
+5. ~~refactor-pipeline-collapse~~ — removed haruspex_check query
 
-1. [[refactor-whnf]] — proper weak head normal form with meta resolution (replaces ad-hoc env forcing)
-2. [[refactor-ncase-closures]] — closure-based ncase neutrals (fixes core/value layer mixing)
-3. [[refactor-unified-elaboration]] — merge Elaborate and Check into a single pass (root cause fix)
-4. [[refactor-motive]] — proper dependent motive computation via NbE (replaces dual mechanism)
-5. [[refactor-pipeline-collapse]] — collapse Roux elaborate+check queries (cleanup after #3)
+## Correctness fixes
+
+Brittleness issues found by comparison with Agda/Lean/Idris compiler patterns.
+
+1. [[fix-eval-ctx-threading]] — thread metas/defs through all closure evaluations (eval.ex, unify.ex); add missing vglobal cases
+2. [[fix-ncase-scope-check]] — ncase scope/occurs check should inspect branch closures
+3. [[fix-erase-subst]] — erasure should use eval+quote instead of syntactic subst
+4. [[fix-with-convertibility]] — with-abstraction should use NbE conversion, not syntactic equality
 
 Items 1-2 can be done independently and immediately. Item 3 is the big one — it eliminates the root cause of implicit reinsertion hacks, meta state discontinuity, and the `collect_total_defs` substitution. Items 4-5 are best done after 3.
 
