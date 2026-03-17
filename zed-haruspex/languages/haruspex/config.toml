@@ -2,7 +2,6 @@ name = "Haruspex"
 grammar = "haruspex"
 path_suffixes = ["hx"]
 line_comments = ["# "]
-block_comment = []
 autoclose_before = ";:.,=})]>"
 brackets = [
   { start = "(", end = ")", close = true, newline = false },
