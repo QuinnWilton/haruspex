@@ -43,6 +43,9 @@ defmodule Haruspex do
   def completions_query, do: :haruspex_completions
 
   @impl Roux.Lang
+  def document_symbols_query, do: :haruspex_document_symbols
+
+  @impl Roux.Lang
   def register_queries(db), do: Roux.Lang.register_module(db, __MODULE__)
 
   @impl Roux.Lang
@@ -404,19 +407,44 @@ defmodule Haruspex do
     end
   end
 
-  defquery :haruspex_hover, key: key do
-    _ = {db, key}
-    nil
+  @doc """
+  Produce hover content for the node at a given position.
+
+  The key is `{uri, {line, col}}` where line and col are 1-based.
+  Returns a markdown string or nil.
+  """
+  defquery :haruspex_hover, key: {uri, position} do
+    Haruspex.LSP.hover(db, uri, position)
   end
 
-  defquery :haruspex_definition, key: key do
-    _ = {db, key}
-    nil
+  @doc """
+  Find the definition site for the name at a given position.
+
+  The key is `{uri, {line, col}}` where line and col are 1-based.
+  Returns `%{uri: uri, line: line, column: col}` or nil.
+  """
+  defquery :haruspex_definition, key: {uri, position} do
+    Haruspex.LSP.definition(db, uri, position)
   end
 
-  defquery :haruspex_completions, key: key do
-    _ = {db, key}
-    []
+  @doc """
+  Return completion items at a given position.
+
+  The key is `{uri, {line, col}}` where line and col are 1-based.
+  Returns a list of `%{label: name, detail: type_string, kind: kind}` maps.
+  """
+  defquery :haruspex_completions, key: {uri, position} do
+    Haruspex.LSP.completions(db, uri, position)
+  end
+
+  @doc """
+  Return document symbols for a file.
+
+  The key is the file URI. Returns a list of symbol maps with `:name`,
+  `:kind`, `:range`, and `:selection_range`.
+  """
+  defquery :haruspex_document_symbols, key: uri do
+    Haruspex.LSP.document_symbols(db, uri)
   end
 
   # ============================================================================

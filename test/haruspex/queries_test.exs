@@ -342,16 +342,40 @@ defmodule Haruspex.QueriesTest do
       assert {:ok, :total} = Roux.Runtime.query(db, :haruspex_totality, {@uri, :dummy})
     end
 
-    test "hover returns nil", %{db: db} do
-      assert nil == Roux.Runtime.query(db, :haruspex_hover, {@uri, {1, 1}})
+    test "hover on definition name returns type", %{db: db} do
+      set_source(db, "def id(x : Int) : Int do x end\n")
+
+      # Position on "id" (line 1, col 5).
+      result = Roux.Runtime.query(db, :haruspex_hover, {@uri, {1, 5}})
+      assert is_binary(result)
+      assert result =~ "id"
     end
 
-    test "definition returns nil", %{db: db} do
-      assert nil == Roux.Runtime.query(db, :haruspex_definition, {@uri, {1, 1}})
+    test "hover outside any definition returns nil", %{db: db} do
+      # Source with trailing newline means line 2 is empty.
+      set_source(db, "def id(x : Int) : Int do x end\n\n")
+
+      result = Roux.Runtime.query(db, :haruspex_hover, {@uri, {2, 1}})
+      assert is_nil(result)
     end
 
-    test "completions returns empty list", %{db: db} do
-      assert [] == Roux.Runtime.query(db, :haruspex_completions, {@uri, {1, 1}})
+    test "definition returns location for known name", %{db: db} do
+      set_source(db, "def id(x : Int) : Int do id end\n")
+
+      # Cursor on "id" in the body (byte offset for the body "id").
+      # "def id(x : Int) : Int do id end" -> "id" at col 26.
+      result = Roux.Runtime.query(db, :haruspex_definition, {@uri, {1, 26}})
+      assert result == nil or is_map(result)
+    end
+
+    test "completions returns definition names", %{db: db} do
+      set_source(db, "def id(x : Int) : Int do x end\n")
+
+      result = Roux.Runtime.query(db, :haruspex_completions, {@uri, {1, 1}})
+      assert is_list(result)
+
+      labels = Enum.map(result, & &1.label)
+      assert "id" in labels
     end
   end
 

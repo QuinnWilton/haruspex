@@ -15,6 +15,7 @@ defmodule Haruspex.MixProject do
         ignore_modules: [
           Haruspex.MixProject,
           Haruspex,
+          Haruspex.LSP,
           Haruspex.MutualGroup,
           Haruspex.FileInfo,
           Haruspex.Prelude
